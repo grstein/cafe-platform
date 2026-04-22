@@ -1,354 +1,195 @@
 /**
- * @fileoverview Customer repository (mini CRM).
- *
- * Factory pattern — call createCustomerRepo(db) with a better-sqlite3 instance.
+ * @fileoverview Customer repository (mini CRM) — PostgreSQL, async.
  */
 
-/** @typedef {import('better-sqlite3').Database} Database */
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-/**
- * @typedef {Object} Customer
- * @property {number} id
- * @property {string} phone
- * @property {string|null} push_name
- * @property {string|null} name
- * @property {string|null} cpf
- * @property {string|null} email
- * @property {string|null} cep
- * @property {string|null} address
- * @property {string|null} city
- * @property {string|null} state
- * @property {string} tags - JSON array
- * @property {string} preferences - JSON object
- * @property {string|null} notes
- * @property {string} first_seen_at
- * @property {string} last_seen_at
- * @property {number} total_orders
- * @property {number} total_spent
- * @property {number|null} nps_score
- * @property {string|null} nps_date
- * @property {string} created_at
- * @property {string} updated_at
- */
+function genCode(prefix) {
+  let code = prefix;
+  for (let i = 0; i < 4; i++) {
+    code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  }
+  return code;
+}
 
-/** Characters for referral code generation (no 0/O/1/I/L ambiguity) */
-const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-/** Fields allowed in updateInfo */
 const UPDATABLE_FIELDS = new Set([
-  'name',
-  'cep',
-  'email',
-  'cpf',
-  'city',
-  'state',
-  'address',
-  'preferences',
-  'notes',
-  'referred_by_phone',
+  "name", "cep", "email", "cpf", "city", "state", "address",
+  "preferences", "notes", "referred_by_phone",
 ]);
 
 /**
- * Creates a customer repository bound to the given database instance.
- *
- * @param {Database} db - better-sqlite3 database instance
- * @returns {ReturnType<typeof _buildRepo>}
+ * @param {import('postgres').Sql} sql
  */
-export function createCustomerRepo(db) {
-  return _buildRepo(db);
-}
-
-/**
- * @param {Database} db
- */
-function _buildRepo(db) {
-  // ── Prepared statements ──────────────────────────────────────────────
-
-  const stmtInsertIgnore = db.prepare(`
-    INSERT OR IGNORE INTO customers (phone, push_name)
-    VALUES (?, ?)
-  `);
-
-  const stmtUpdateSeen = db.prepare(`
-    UPDATE customers
-    SET last_seen_at = datetime('now'),
-        push_name = COALESCE(?, push_name),
-        updated_at = datetime('now')
-    WHERE phone = ?
-  `);
-
-  const stmtGetByPhone = db.prepare(
-    `SELECT * FROM customers WHERE phone = ?`
-  );
-
-  const stmtSetNPS = db.prepare(`
-    UPDATE customers
-    SET nps_score = ?, nps_date = datetime('now'), updated_at = datetime('now')
-    WHERE phone = ?
-  `);
-
-  const stmtGetTags = db.prepare(
-    `SELECT tags FROM customers WHERE phone = ?`
-  );
-
-  const stmtSetTags = db.prepare(`
-    UPDATE customers SET tags = ?, updated_at = datetime('now') WHERE phone = ?
-  `);
-
-  const stmtGetByReferralCode = db.prepare(
-    `SELECT * FROM customers WHERE referral_code = ?`
-  );
-
-  const stmtSetAccessStatus = db.prepare(`
-    UPDATE customers SET access_status = ?, updated_at = datetime('now') WHERE phone = ?
-  `);
-
-  const stmtSetReferralCode = db.prepare(`
-    UPDATE customers SET referral_code = ?, updated_at = datetime('now') WHERE phone = ?
-  `);
-
-  const stmtCheckCode = db.prepare(
-    `SELECT 1 FROM customers WHERE referral_code = ?`
-  );
-
-  const stmtFindByAccessStatus = db.prepare(
-    `SELECT * FROM customers WHERE access_status = ? ORDER BY last_seen_at DESC`
-  );
-
-  const stmtRecalcCounters = db.prepare(`
-    UPDATE customers SET
-      total_orders = (
-        SELECT COUNT(*) FROM orders
-        WHERE orders.phone = ? AND orders.status NOT IN ('cancelled', 'pending')
-      ),
-      total_spent = (
-        SELECT COALESCE(SUM(total), 0) FROM orders
-        WHERE orders.phone = ? AND orders.status NOT IN ('cancelled', 'pending')
-      ),
-      updated_at = datetime('now')
-    WHERE phone = ?
-  `);
-
-  // ── Public API ───────────────────────────────────────────────────────
-
+export function createCustomerRepo(sql) {
   return {
     /**
-     * Upsert a customer: create if new, update last_seen_at and push_name if existing.
-     *
-     * @param {string} phone
-     * @param {{ push_name?: string|null }} [data]
-     * @returns {Customer}
+     * Upsert: create or touch last_seen_at. Optionally set access_status
+     * and referred_by_phone on first insert or explicitly on update.
      */
-    upsert(phone, data = {}) {
+    async upsert(phone, data = {}) {
       const pushName = data.push_name ?? null;
-      // Check if this is a brand-new customer (doesn't exist yet)
-      const existed = !!stmtGetByPhone.get(phone);
-      stmtInsertIgnore.run(phone, pushName);
-      stmtUpdateSeen.run(pushName, phone);
-      // Auto-generate referral code for new customers
-      if (!existed) {
-        const customer = stmtGetByPhone.get(phone);
-        if (customer && !customer.referral_code) {
-          let code;
-          let attempts = 0;
-          do {
-            code = process.env.REFERRAL_CODE_PREFIX || 'REF-';
-            for (let i = 0; i < 4; i++) {
-              code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
-            }
-            attempts++;
-          } while (stmtCheckCode.get(code) && attempts < 100);
-          stmtSetReferralCode.run(code, phone);
-        }
+      const accessStatus = data.access_status ?? null;
+      const referredBy = data.referred_by_phone ?? null;
+
+      // COALESCE(EXCLUDED.col, table.col) keeps existing value when NULL
+      // ::TEXT cast tells PG the type of the null literal
+      const [row] = await sql`
+        INSERT INTO customers (phone, push_name, access_status, referred_by_phone)
+        VALUES (
+          ${phone},
+          ${pushName},
+          ${accessStatus ?? "active"},
+          ${referredBy}
+        )
+        ON CONFLICT (phone) DO UPDATE SET
+          last_seen_at      = NOW(),
+          push_name         = COALESCE(EXCLUDED.push_name, customers.push_name),
+          access_status     = COALESCE(${accessStatus}::TEXT, customers.access_status),
+          referred_by_phone = COALESCE(${referredBy}::TEXT, customers.referred_by_phone),
+          updated_at        = NOW()
+        RETURNING *
+      `;
+
+      // Auto-generate referral code for new customers (or any without one)
+      if (!row.referral_code) {
+        const prefix = process.env.REFERRAL_CODE_PREFIX || "REF-";
+        let code, attempts = 0;
+        do {
+          code = genCode(prefix);
+          const [existing] = await sql`SELECT 1 FROM customers WHERE referral_code = ${code}`;
+          if (!existing) break;
+          attempts++;
+        } while (attempts < 100);
+        await sql`UPDATE customers SET referral_code = ${code} WHERE phone = ${phone}`;
+        row.referral_code = code;
       }
-      return stmtGetByPhone.get(phone);
+
+      return row;
     },
 
-    /**
-     * Get a customer by phone number.
-     *
-     * @param {string} phone
-     * @returns {Customer|undefined}
-     */
-    getByPhone(phone) {
-      return stmtGetByPhone.get(phone);
+    async getByPhone(phone) {
+      const [row] = await sql`SELECT * FROM customers WHERE phone = ${phone}`;
+      return row ?? null;
     },
 
-    /**
-     * Partially update customer info fields.
-     * Only the fields present in `fields` are updated.
-     *
-     * @param {string} phone
-     * @param {Partial<Pick<Customer, 'name'|'cep'|'email'|'cpf'|'city'|'state'|'address'|'preferences'|'notes'>>} fields
-     * @returns {Customer|undefined}
-     */
-    updateInfo(phone, fields) {
-      const entries = Object.entries(fields).filter(([k]) =>
-        UPDATABLE_FIELDS.has(k)
-      );
-      if (entries.length === 0) return stmtGetByPhone.get(phone);
+    async updateInfo(phone, fields) {
+      const entries = Object.entries(fields).filter(([k]) => UPDATABLE_FIELDS.has(k));
+      if (entries.length === 0) return this.getByPhone(phone);
 
-      const setClauses = entries.map(([k]) => `${k} = ?`);
-      setClauses.push(`updated_at = datetime('now')`);
+      // Build update object with serialized values (no sql fragments)
+      const updates = {};
+      for (const [k, v] of entries) {
+        updates[k] = typeof v === "object" && v !== null ? JSON.stringify(v) : v;
+      }
 
-      const sql = `UPDATE customers SET ${setClauses.join(', ')} WHERE phone = ?`;
-      const values = entries.map(([, v]) =>
-        typeof v === 'object' && v !== null ? JSON.stringify(v) : v
-      );
-      values.push(phone);
-
-      db.prepare(sql).run(...values);
-      return stmtGetByPhone.get(phone);
+      // sql(updates) builds "key = $N, ..." — add updated_at literally
+      const [row] = await sql`
+        UPDATE customers
+        SET ${sql(updates)}, updated_at = NOW()
+        WHERE phone = ${phone}
+        RETURNING *
+      `;
+      return row ?? null;
     },
 
-    /**
-     * Recalculate total_orders and total_spent from the orders table.
-     *
-     * @param {string} phone
-     * @returns {Customer|undefined}
-     */
-    updateCounters(phone) {
-      stmtRecalcCounters.run(phone, phone, phone);
-      return stmtGetByPhone.get(phone);
+    async updateCounters(phone) {
+      const [row] = await sql`
+        UPDATE customers SET
+          total_orders = (
+            SELECT COUNT(*) FROM orders
+            WHERE orders.phone = ${phone} AND orders.status NOT IN ('cancelled', 'pending')
+          ),
+          total_spent = (
+            SELECT COALESCE(SUM(total), 0) FROM orders
+            WHERE orders.phone = ${phone} AND orders.status NOT IN ('cancelled', 'pending')
+          ),
+          updated_at = NOW()
+        WHERE phone = ${phone}
+        RETURNING *
+      `;
+      return row ?? null;
     },
 
-    /**
-     * Set NPS score for a customer.
-     *
-     * @param {string} phone
-     * @param {number} score - NPS score (0-10)
-     * @returns {Customer|undefined}
-     */
-    setNPS(phone, score) {
-      stmtSetNPS.run(score, phone);
-      return stmtGetByPhone.get(phone);
+    async setNPS(phone, score) {
+      const [row] = await sql`
+        UPDATE customers
+        SET nps_score = ${score}, nps_date = NOW(), updated_at = NOW()
+        WHERE phone = ${phone}
+        RETURNING *
+      `;
+      return row ?? null;
     },
 
-    /**
-     * Add a tag to the customer's tag array (no duplicates).
-     *
-     * @param {string} phone
-     * @param {string} tag
-     * @returns {Customer|undefined}
-     */
-    addTag(phone, tag) {
-      const row = stmtGetTags.get(phone);
-      if (!row) return undefined;
-
-      const tags = JSON.parse(row.tags);
+    async addTag(phone, tag) {
+      const customer = await this.getByPhone(phone);
+      if (!customer) return null;
+      let tags = [];
+      try { tags = JSON.parse(customer.tags); } catch {}
       if (!tags.includes(tag)) {
         tags.push(tag);
-        stmtSetTags.run(JSON.stringify(tags), phone);
+        await sql`UPDATE customers SET tags = ${JSON.stringify(tags)}, updated_at = NOW() WHERE phone = ${phone}`;
       }
-      return stmtGetByPhone.get(phone);
+      return this.getByPhone(phone);
     },
 
-    /**
-     * Remove a tag from the customer's tag array.
-     *
-     * @param {string} phone
-     * @param {string} tag
-     * @returns {Customer|undefined}
-     */
-    removeTag(phone, tag) {
-      const row = stmtGetTags.get(phone);
-      if (!row) return undefined;
-
-      const tags = JSON.parse(row.tags);
+    async removeTag(phone, tag) {
+      const customer = await this.getByPhone(phone);
+      if (!customer) return null;
+      let tags = [];
+      try { tags = JSON.parse(customer.tags); } catch {}
       const filtered = tags.filter((t) => t !== tag);
       if (filtered.length !== tags.length) {
-        stmtSetTags.run(JSON.stringify(filtered), phone);
+        await sql`UPDATE customers SET tags = ${JSON.stringify(filtered)}, updated_at = NOW() WHERE phone = ${phone}`;
       }
-      return stmtGetByPhone.get(phone);
+      return this.getByPhone(phone);
     },
 
-    /**
-     * List customers with optional filters.
-     *
-     * @param {{ limit?: number, offset?: number, tag?: string, hasOrders?: boolean }} [opts]
-     * @returns {Customer[]}
-     */
-    list(opts = {}) {
+    async list(opts = {}) {
       const { limit = 50, offset = 0, tag, hasOrders } = opts;
-
-      const conditions = [];
-      const params = [];
-
-      if (tag) {
-        // JSON array contains check: tags LIKE '%"vip"%'
-        conditions.push(`tags LIKE ?`);
-        params.push(`%${JSON.stringify(tag)}%`);
-      }
-
-      if (hasOrders === true) {
-        conditions.push(`total_orders > 0`);
-      } else if (hasOrders === false) {
-        conditions.push(`total_orders = 0`);
-      }
-
-      const where =
-        conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-      const sql = `SELECT * FROM customers ${where} ORDER BY last_seen_at DESC LIMIT ? OFFSET ?`;
-      params.push(limit, offset);
-
-      return db.prepare(sql).all(...params);
+      return sql`
+        SELECT * FROM customers
+        WHERE 1=1
+          ${tag ? sql`AND tags LIKE ${"%" + JSON.stringify(tag) + "%"}` : sql``}
+          ${hasOrders === true  ? sql`AND total_orders > 0` : sql``}
+          ${hasOrders === false ? sql`AND total_orders = 0` : sql``}
+        ORDER BY last_seen_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
     },
 
-    // ── Referral methods ─────────────────────────────────────────────
-
-    /**
-     * Get a customer by their referral code.
-     *
-     * @param {string} code - Referral code (e.g., 'REF-G7K2').
-     * @returns {Customer|undefined}
-     */
-    getByReferralCode(code) {
-      return stmtGetByReferralCode.get(code);
+    async getByReferralCode(code) {
+      const [row] = await sql`SELECT * FROM customers WHERE referral_code = ${code}`;
+      return row ?? null;
     },
 
-    /**
-     * Set access status for a customer.
-     *
-     * @param {string} phone
-     * @param {'seed'|'invited'|'active'|'blocked'} status
-     */
-    setAccessStatus(phone, status) {
-      stmtSetAccessStatus.run(status, phone);
+    async setAccessStatus(phone, status) {
+      await sql`
+        UPDATE customers SET access_status = ${status}, updated_at = NOW()
+        WHERE phone = ${phone}
+      `;
     },
 
-    /**
-     * Find customers by access status.
-     *
-     * @param {'seed'|'invited'|'active'|'blocked'} status
-     * @returns {Customer[]}
-     */
-    findByAccessStatus(status) {
-      return stmtFindByAccessStatus.all(status);
+    async findByAccessStatus(status) {
+      return sql`
+        SELECT * FROM customers WHERE access_status = ${status}
+        ORDER BY last_seen_at DESC
+      `;
     },
 
-    /**
-     * Generate a unique referral code and save it for a customer.
-     * If the customer already has a code, returns the existing one.
-     *
-     * @param {string} phone
-     * @returns {string} The referral code.
-     */
-    ensureReferralCode(phone) {
-      const customer = stmtGetByPhone.get(phone);
+    async ensureReferralCode(phone) {
+      const customer = await this.getByPhone(phone);
       if (customer?.referral_code) return customer.referral_code;
 
-      let code;
-      let attempts = 0;
+      const prefix = process.env.REFERRAL_CODE_PREFIX || "REF-";
+      let code, attempts = 0;
       do {
-        code = process.env.REFERRAL_CODE_PREFIX || 'REF-';
-        for (let i = 0; i < 4; i++) {
-          code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
-        }
+        code = genCode(prefix);
+        const [existing] = await sql`SELECT 1 FROM customers WHERE referral_code = ${code}`;
+        if (!existing) break;
         attempts++;
-      } while (stmtCheckCode.get(code) && attempts < 100);
+      } while (attempts < 100);
 
-      stmtSetReferralCode.run(code, phone);
+      await sql`UPDATE customers SET referral_code = ${code}, updated_at = NOW() WHERE phone = ${phone}`;
       return code;
     },
   };

@@ -3,7 +3,8 @@ import path from "path";
 import http from "http";
 import { connect, publish, consume, ack } from "../shared/lib/rabbitmq.mjs";
 import { createBaileysConnection } from "../shared/lib/baileys-client.mjs";
-import { getConfig } from "../shared/lib/config.mjs";
+import { loadConfig, getConfig } from "../shared/lib/config.mjs";
+import { getDB, initDB } from "../shared/db/connection.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const DATA_DIR = process.env.DATA_DIR || "./data";
@@ -14,16 +15,19 @@ let connection = null;
 
 async function main() {
   console.log("🟢 WhatsApp Bridge starting...");
+  await initDB();
+  await loadConfig(getDB());
   const { connection: rmqConn, channel } = await connect(RABBITMQ_URI);
   const config = getConfig();
 
-  const instanceName = config.channel?.instance_name || config.display_name || config.tenant_id;
-  const authDir = path.join(DATA_DIR, config.tenant_id, "auth");
+  const instanceName = config.display_name || "CafePlatform";
+  // Auth state lives at DATA_DIR/auth (no tenant prefix — single-tenant deployment)
+  const authDir = path.join(DATA_DIR, "auth");
 
-  console.log(`   Connecting instance: ${instanceName}`);
+  console.log(`   Instance: ${instanceName}`);
 
   connection = await createBaileysConnection({
-    tenantId: config.tenant_id,
+    label: instanceName,
     authDir,
     onMessage(msg) {
       const payload = baileysMessageToPayload(msg, instanceName);
@@ -31,7 +35,7 @@ async function main() {
     },
     onQR(qr) {
       qrCode = qr;
-      console.log(`[bridge] QR ready — open http://localhost:${QR_PORT} to scan`);
+      console.log(`[bridge] QR ready — open http://localhost:${QR_PORT}/qr to scan`);
     },
     onConnect() {
       qrCode = null;

@@ -1,13 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-// Copy buildContextBlock from enricher.mjs
+// Inline buildContextBlock (pure function, no DB)
 function buildContextBlock(customer, cart, orders, history, config, envelope) {
   const lines = ["[CONTEXTO DO CLIENTE]"];
   if (customer) {
     lines.push("Nome: " + (customer.name || customer.push_name || "não informado"));
     if (customer.cep) lines.push("CEP: " + customer.cep);
-    if (customer.total_orders > 0) lines.push("Pedidos anteriores: " + customer.total_orders);
+    if (Number(customer.total_orders) > 0) lines.push("Pedidos anteriores: " + customer.total_orders);
   }
   if (cart && cart.count > 0) {
     lines.push("", "[CARRINHO ATUAL]");
@@ -16,7 +16,7 @@ function buildContextBlock(customer, cart, orders, history, config, envelope) {
   }
   if (orders && orders.length > 0) {
     lines.push("", "[ÚLTIMOS PEDIDOS]");
-    for (const o of orders) lines.push("- #TEST-" + o.id + " (" + o.status + ") R$ " + o.total.toFixed(2));
+    for (const o of orders) lines.push("- #TEST-" + o.id + " (" + o.status + ") R$ " + Number(o.total).toFixed(2) + " (" + String(o.created_at).slice(0, 10) + ")");
   }
   if (envelope?.payload?.is_batch) {
     lines.push("", "[MENSAGENS EM SEQUÊNCIA — " + envelope.payload.batch_count + " mensagens]");
@@ -28,7 +28,7 @@ function buildContextBlock(customer, cart, orders, history, config, envelope) {
 
 describe("enricher buildContextBlock", () => {
   it("includes customer name", () => {
-    const r = buildContextBlock({ name: "João", push_name: "Jo" }, null, [], [], {}, {});
+    const r = buildContextBlock({ name: "João", push_name: "Jo", total_orders: 0 }, null, [], [], {}, {});
     assert.ok(r.includes("João"));
   });
 

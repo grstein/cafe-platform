@@ -13,7 +13,8 @@ function lidToPhone(sock, lid) {
   return null;
 }
 
-export async function createBaileysConnection({ tenantId, authDir, onMessage, onQR, onConnect, onDisconnect }) {
+export async function createBaileysConnection({ label, authDir, onMessage, onQR, onConnect, onDisconnect }) {
+  const tenantId = label || "bridge"; // kept as local label for log messages only
   fs.mkdirSync(authDir, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const { version } = await fetchLatestBaileysVersion();

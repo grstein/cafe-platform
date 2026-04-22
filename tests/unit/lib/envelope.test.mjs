@@ -11,7 +11,6 @@ describe("envelope", () => {
     assert.ok(e.id);
     assert.ok(e.correlation_id);
     assert.notEqual(e.id, e.correlation_id);
-    assert.equal(e.tenant_id, process.env.TENANT_ID);
     assert.equal(e.phone, "123");
     assert.equal(e.payload.merged_text, "hi");
     assert.equal(e.payload.batch_count, 1);

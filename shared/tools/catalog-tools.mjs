@@ -1,20 +1,10 @@
 /**
- * @fileoverview Catalog search tool for the Pi Agent.
- *
- * Replaces the agent's need to `read catalogo.csv` with a structured
- * search that returns only matching products — saving tokens and
- * enabling filter-by-profile, price range, etc.
+ * @fileoverview Catalog search tool for the Pi Agent — async repos.
  */
 
 import { defineTool } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-/**
- * Creates the search_catalog tool bound to the product repo.
- *
- * @param {{ products: ReturnType<typeof import('../db/products.mjs').createProductRepo> }} repos
- * @returns {Array} Array with one defineTool result.
- */
 export function createCatalogTools(repos) {
   const searchCatalog = defineTool({
     name: "search_catalog",
@@ -25,73 +15,47 @@ export function createCatalogTools(repos) {
       "Use para recomendar, comparar ou verificar informações antes de criar pedidos.",
     promptSnippet: "Busca cafés por nome, perfil, torrefação, preço ou nota SCA",
     promptGuidelines: [
-      "Use search_catalog em vez de ler catalogo.csv — é mais rápido e preciso.",
       "Sempre consulte search_catalog antes de recomendar cafés ou criar pedidos.",
       "Para ver todos os cafés disponíveis, chame sem parâmetros.",
-      "Use o campo knowledge_file para saber qual ficha detalha cada café.",
     ],
     parameters: Type.Object({
-      query: Type.Optional(
-        Type.String({ description: "Busca por nome, perfil sensorial, torrefação ou origem (ex: 'achocolatado', 'Moka', 'Mantiqueira')" })
-      ),
-      max_price: Type.Optional(
-        Type.Number({ description: "Preço máximo em reais" })
-      ),
-      min_sca: Type.Optional(
-        Type.Number({ description: "Nota SCA mínima (ex: 85)" })
-      ),
-      roaster: Type.Optional(
-        Type.String({ description: "Nome exato da torrefação" })
-      ),
-      include_unavailable: Type.Optional(
-        Type.Boolean({ description: "Incluir cafés indisponíveis (padrão: false)" })
-      ),
+      query: Type.Optional(Type.String({ description: "Busca por nome, perfil sensorial, torrefação ou origem" })),
+      max_price: Type.Optional(Type.Number({ description: "Preço máximo em reais" })),
+      min_sca: Type.Optional(Type.Number({ description: "Nota SCA mínima (ex: 85)" })),
+      available_only: Type.Optional(Type.Boolean({ description: "Somente disponíveis (padrão: true)" })),
     }),
 
     async execute(_toolCallId, params) {
-      const results = repos.products.search({
-        query: params.query,
-        available: params.include_unavailable ? undefined : true,
-        maxPrice: params.max_price,
-        minSca: params.min_sca,
-        roaster: params.roaster,
+      const products = await repos.products.search({
+        query:     params.query,
+        maxPrice:  params.max_price,
+        minSca:    params.min_sca,
+        available: params.available_only !== false,
       });
 
-      if (results.length === 0) {
+      if (products.length === 0) {
         return {
-          content: [{ type: "text", text: "Nenhum café encontrado com esses critérios." }],
+          content: [{ type: "text", text: "Nenhum produto encontrado para os filtros informados." }],
           details: { count: 0 },
         };
       }
 
-      const lines = results.map(p => {
-        const parts = [
-          `SKU: ${p.sku}`,
-          `Nome: ${p.name}`,
-          `Torrefação: ${p.roaster}`,
-          `SCA: ${p.sca_score || 'N/A'}`,
-          `Perfil: ${p.profile || 'N/A'}`,
-          `Preço: R$ ${p.price.toFixed(2)}`,
-          `Peso: ${p.weight}`,
-          `Disponível: ${p.available ? 'sim' : 'não'}`,
-        ];
+      const lines = products.map(p => {
+        const parts = [`SKU: ${p.sku}`, `Nome: ${p.name}`, `Preço: R$ ${Number(p.price).toFixed(2)}`];
+        if (p.roaster) parts.push(`Torrefação: ${p.roaster}`);
+        if (p.sca_score) parts.push(`SCA: ${p.sca_score}`);
+        if (p.profile) parts.push(`Perfil: ${p.profile}`);
         if (p.origin) parts.push(`Origem: ${p.origin}`);
         if (p.process) parts.push(`Processo: ${p.process}`);
+        if (p.weight) parts.push(`Peso: ${p.weight}`);
         if (p.highlight) parts.push(`Destaque: ${p.highlight}`);
-        if (p.stock > 0) parts.push(`Estoque: ${p.stock}`);
-        if (p.knowledge_file) parts.push(`Ficha: ${p.knowledge_file}`);
-        return parts.join(' | ');
+        parts.push(`Disponível: ${p.available ? "sim" : "não"}`);
+        return parts.join(" | ");
       });
 
-      const summary = [
-        `${results.length} café(s) encontrado(s):`,
-        '',
-        ...lines,
-      ].join('\n');
-
       return {
-        content: [{ type: "text", text: summary }],
-        details: { count: results.length, skus: results.map(p => p.sku) },
+        content: [{ type: "text", text: `${products.length} produto(s) encontrado(s):\n\n${lines.join("\n")}` }],
+        details: { count: products.length, products },
       };
     },
   });

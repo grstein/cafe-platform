@@ -1,318 +1,180 @@
 /**
- * @fileoverview Order repository.
- *
- * Factory pattern — call createOrderRepo(db) with a better-sqlite3 instance.
- */
-
-/** @typedef {import('better-sqlite3').Database} Database */
-
-/**
- * @typedef {Object} Order
- * @property {number} id
- * @property {string} phone
- * @property {number|null} customer_id
- * @property {string|null} name
- * @property {string} status
- * @property {string} items - JSON array
- * @property {number} subtotal
- * @property {number} discount
- * @property {number|null} shipping
- * @property {number} total
- * @property {string|null} cep
- * @property {string|null} notes
- * @property {string} created_at
- * @property {string|null} confirmed_at
- * @property {string|null} paid_at
- * @property {string|null} shipped_at
- * @property {string|null} tracking
- * @property {string|null} cancelled_at
+ * @fileoverview Order repository — PostgreSQL, async.
  */
 
 /**
- * Creates an order repository bound to the given database instance.
- *
- * @param {Database} db - better-sqlite3 database instance
- * @returns {ReturnType<typeof _buildRepo>}
+ * @param {import('postgres').Sql} sql
  */
-export function createOrderRepo(db) {
-  return _buildRepo(db);
-}
-
-/**
- * @param {Database} db
- */
-function _buildRepo(db) {
-  // ── Prepared statements ──────────────────────────────────────────────
-
-  const stmtCancelPending = db.prepare(`
-    UPDATE orders
-    SET status = 'cancelled', cancelled_at = datetime('now')
-    WHERE phone = ? AND status = 'pending'
-  `);
-
-  const stmtInsert = db.prepare(`
-    INSERT INTO orders (phone, customer_id, name, items, subtotal, discount, shipping, total, cep, notes)
-    VALUES (@phone, @customer_id, @name, @items, @subtotal, @discount, @shipping, @total, @cep, @notes)
-  `);
-
-  const stmtGetPending = db.prepare(`
-    SELECT * FROM orders
-    WHERE phone = ? AND status = 'pending'
-    ORDER BY id DESC
-    LIMIT 1
-  `);
-
-  const stmtConfirm = db.prepare(`
-    UPDATE orders
-    SET status = 'confirmed', confirmed_at = datetime('now')
-    WHERE phone = ? AND status = 'pending'
-  `);
-
-  const stmtCancel = db.prepare(`
-    UPDATE orders
-    SET status = 'cancelled', cancelled_at = datetime('now')
-    WHERE phone = ? AND status = 'pending'
-  `);
-
-  const stmtGetById = db.prepare(`SELECT * FROM orders WHERE id = ?`);
-
-  const stmtGetLastCompleted = db.prepare(`
-    SELECT * FROM orders
-    WHERE phone = ? AND status IN ('confirmed', 'paid', 'shipped', 'delivered')
-    ORDER BY id DESC
-    LIMIT 1
-  `);
-
-  // ── Public API ───────────────────────────────────────────────────────
-
+export function createOrderRepo(sql) {
   return {
     /**
      * Create a new order. Cancels any existing pending orders for the same phone.
-     *
-     * @param {string} phone
-     * @param {{ customerId?: number|null, name?: string|null, items: string|Array, subtotal: number, discount?: number, shipping?: number|null, total: number, cep?: string|null, notes?: string|null }} data
-     * @returns {number} The new order ID.
+     * @returns {Promise<number>} The new order ID.
      */
-    create(phone, data) {
-      const run = db.transaction(() => {
-        // Cancel existing pending orders for this phone
-        stmtCancelPending.run(phone);
+    async create(phone, data) {
+      const items = typeof data.items === "string" ? data.items : JSON.stringify(data.items);
 
-        const items =
-          typeof data.items === 'string'
-            ? data.items
-            : JSON.stringify(data.items);
+      const [row] = await sql.begin(async (tx) => {
+        // Cancel existing pending orders
+        await tx`
+          UPDATE orders SET status = 'cancelled', cancelled_at = NOW()
+          WHERE phone = ${phone} AND status = 'pending'
+        `;
 
-        const result = stmtInsert.run({
-          phone,
-          customer_id: data.customerId ?? null,
-          name: data.name ?? null,
-          items,
-          subtotal: data.subtotal,
-          discount: data.discount ?? 0,
-          shipping: data.shipping ?? null,
-          total: data.total,
-          cep: data.cep ?? null,
-          notes: data.notes ?? null,
-        });
-
-        return Number(result.lastInsertRowid);
+        return tx`
+          INSERT INTO orders (phone, customer_id, name, items, subtotal, discount, shipping, total, cep, notes)
+          VALUES (
+            ${phone}, ${data.customerId ?? null}, ${data.name ?? null},
+            ${items}, ${data.subtotal}, ${data.discount ?? 0},
+            ${data.shipping ?? null}, ${data.total},
+            ${data.cep ?? null}, ${data.notes ?? null}
+          )
+          RETURNING *
+        `;
       });
 
-      return run();
+      return Number(row.id);
     },
 
-    /**
-     * Get the most recent pending order for a phone.
-     *
-     * @param {string} phone
-     * @returns {Order|undefined}
-     */
-    getPending(phone) {
-      return stmtGetPending.get(phone);
+    async getPending(phone) {
+      const [row] = await sql`
+        SELECT * FROM orders WHERE phone = ${phone} AND status = 'pending'
+        ORDER BY id DESC LIMIT 1
+      `;
+      return row ?? null;
     },
 
-    /**
-     * Confirm the pending order for a phone.
-     *
-     * @param {string} phone
-     * @returns {Order|undefined} The confirmed order, or undefined if none was pending.
-     */
-    confirm(phone) {
-      const pending = stmtGetPending.get(phone);
-      if (!pending) return undefined;
+    async confirm(phone) {
+      const pending = await this.getPending(phone);
+      if (!pending) return null;
 
-      stmtConfirm.run(phone);
-      return stmtGetById.get(pending.id);
+      const [row] = await sql`
+        UPDATE orders SET status = 'confirmed', confirmed_at = NOW()
+        WHERE phone = ${phone} AND status = 'pending'
+        RETURNING *
+      `;
+      return row ?? null;
     },
 
-    /**
-     * Cancel the pending order for a phone.
-     *
-     * @param {string} phone
-     * @returns {Order|undefined} The cancelled order, or undefined if none was pending.
-     */
-    cancel(phone) {
-      const pending = stmtGetPending.get(phone);
-      if (!pending) return undefined;
+    async cancel(phone) {
+      const pending = await this.getPending(phone);
+      if (!pending) return null;
 
-      stmtCancel.run(phone);
-      return stmtGetById.get(pending.id);
+      const [row] = await sql`
+        UPDATE orders SET status = 'cancelled', cancelled_at = NOW()
+        WHERE phone = ${phone} AND status = 'pending'
+        RETURNING *
+      `;
+      return row ?? null;
     },
 
-    /**
-     * Get an order by its ID.
-     *
-     * @param {number} id
-     * @returns {Order|undefined}
-     */
-    getById(id) {
-      return stmtGetById.get(id);
+    async getById(id) {
+      const [row] = await sql`SELECT * FROM orders WHERE id = ${id}`;
+      return row ?? null;
     },
 
-    /**
-     * Generic status update with optional extra fields.
-     *
-     * @param {number} id
-     * @param {string} status
-     * @param {{ paid_at?: string, shipped_at?: string, tracking?: string }} [extraFields]
-     * @returns {Order|undefined}
-     */
-    updateStatus(id, status, extraFields = {}) {
-      const sets = ['status = ?'];
-      const params = [status];
+    async getLastCompleted(phone) {
+      const [row] = await sql`
+        SELECT * FROM orders
+        WHERE phone = ${phone} AND status IN ('confirmed', 'paid', 'shipped', 'delivered')
+        ORDER BY id DESC LIMIT 1
+      `;
+      return row ?? null;
+    },
 
-      // Add timestamp for known status transitions
+    async updateStatus(id, status, extraFields = {}) {
       const statusTimestamps = {
-        confirmed: 'confirmed_at',
-        paid: 'paid_at',
-        shipped: 'shipped_at',
-        cancelled: 'cancelled_at',
+        confirmed: "confirmed_at",
+        paid:      "paid_at",
+        shipped:   "shipped_at",
+        cancelled: "cancelled_at",
       };
 
-      const tsCol = statusTimestamps[status];
-      if (tsCol && !extraFields[tsCol]) {
-        sets.push(`${tsCol} = datetime('now')`);
-      }
-
-      // Apply extra fields
-      const allowedExtras = ['paid_at', 'shipped_at', 'tracking'];
+      // Build simple value updates (no SQL fragments)
+      const updates = { status };
+      const allowedExtras = ["paid_at", "shipped_at", "tracking"];
       for (const key of allowedExtras) {
-        if (extraFields[key] !== undefined) {
-          sets.push(`${key} = ?`);
-          params.push(extraFields[key]);
-        }
+        if (extraFields[key] !== undefined) updates[key] = extraFields[key];
       }
 
-      params.push(id);
+      // Determine which timestamp column to set to NOW()
+      const tsCol = statusTimestamps[status];
+      const setNowCol = tsCol && !extraFields[tsCol] ? tsCol : null;
 
-      const sql = `UPDATE orders SET ${sets.join(', ')} WHERE id = ?`;
-      db.prepare(sql).run(...params);
-
-      return stmtGetById.get(id);
+      if (setNowCol === "confirmed_at") {
+        const [row] = await sql`UPDATE orders SET ${sql(updates)}, confirmed_at = NOW() WHERE id = ${id} RETURNING *`;
+        return row ?? null;
+      } else if (setNowCol === "paid_at") {
+        const [row] = await sql`UPDATE orders SET ${sql(updates)}, paid_at = NOW() WHERE id = ${id} RETURNING *`;
+        return row ?? null;
+      } else if (setNowCol === "shipped_at") {
+        const [row] = await sql`UPDATE orders SET ${sql(updates)}, shipped_at = NOW() WHERE id = ${id} RETURNING *`;
+        return row ?? null;
+      } else if (setNowCol === "cancelled_at") {
+        const [row] = await sql`UPDATE orders SET ${sql(updates)}, cancelled_at = NOW() WHERE id = ${id} RETURNING *`;
+        return row ?? null;
+      } else {
+        const [row] = await sql`UPDATE orders SET ${sql(updates)} WHERE id = ${id} RETURNING *`;
+        return row ?? null;
+      }
     },
 
-    /**
-     * List orders for a phone with optional filters.
-     *
-     * @param {string} phone
-     * @param {{ status?: string, limit?: number }} [opts]
-     * @returns {Order[]}
-     */
-    listByPhone(phone, opts = {}) {
+    async listByPhone(phone, opts = {}) {
       const { status, limit = 20 } = opts;
-
-      const conditions = ['phone = ?'];
-      const params = [phone];
-
-      if (status) {
-        conditions.push('status = ?');
-        params.push(status);
-      }
-
-      const sql = `SELECT * FROM orders WHERE ${conditions.join(' AND ')} ORDER BY id DESC LIMIT ?`;
-      params.push(limit);
-
-      return db.prepare(sql).all(...params);
+      return sql`
+        SELECT * FROM orders
+        WHERE phone = ${phone}
+          ${status ? sql`AND status = ${status}` : sql``}
+        ORDER BY id DESC
+        LIMIT ${limit}
+      `;
     },
 
-    /**
-     * Get the last completed order for a phone.
-     * "Completed" means status IN ('confirmed', 'paid', 'shipped', 'delivered').
-     *
-     * @param {string} phone
-     * @returns {Order|undefined}
-     */
-    getLastCompleted(phone) {
-      return stmtGetLastCompleted.get(phone);
+    async getRecent(phone, limit = 3) {
+      return sql`
+        SELECT * FROM orders WHERE phone = ${phone}
+        ORDER BY id DESC LIMIT ${limit}
+      `;
     },
 
-    /**
-     * Get aggregate stats for a phone.
-     *
-     * @param {string} phone
-     * @returns {{ totalOrders: number, totalSpent: number, lastOrderDate: string|null, favoriteProduct: string|null }}
-     */
-    getStats(phone) {
-      const agg = db
-        .prepare(
-          `SELECT
-            COUNT(*) AS totalOrders,
-            COALESCE(SUM(total), 0) AS totalSpent,
-            MAX(created_at) AS lastOrderDate
-          FROM orders
-          WHERE phone = ? AND status NOT IN ('cancelled', 'pending')`
-        )
-        .get(phone);
+    async getStats(phone) {
+      const [agg] = await sql`
+        SELECT
+          COUNT(*)::int AS "totalOrders",
+          COALESCE(SUM(total), 0) AS "totalSpent",
+          MAX(created_at) AS "lastOrderDate"
+        FROM orders
+        WHERE phone = ${phone} AND status NOT IN ('cancelled', 'pending')
+      `;
 
-      // Favorite product: parse items JSON from all non-cancelled orders,
-      // count occurrences, return the most frequent.
-      const rows = db
-        .prepare(
-          `SELECT items FROM orders
-           WHERE phone = ? AND status NOT IN ('cancelled', 'pending')`
-        )
-        .all(phone);
+      const rows = await sql`
+        SELECT items FROM orders
+        WHERE phone = ${phone} AND status NOT IN ('cancelled', 'pending')
+      `;
 
       let favoriteProduct = null;
-
-      if (rows.length > 0) {
-        /** @type {Map<string, number>} */
-        const freq = new Map();
-
-        for (const row of rows) {
-          let items;
-          try {
-            items = JSON.parse(row.items);
-          } catch {
-            continue;
-          }
-
-          if (!Array.isArray(items)) continue;
-
-          for (const item of items) {
-            const key = item.name || item.product || item.sku || null;
-            if (key) {
-              freq.set(key, (freq.get(key) || 0) + (item.qty || item.quantity || 1));
-            }
-          }
+      const freq = new Map();
+      for (const row of rows) {
+        let items;
+        try { items = typeof row.items === "string" ? JSON.parse(row.items) : row.items; }
+        catch { continue; }
+        if (!Array.isArray(items)) continue;
+        for (const item of items) {
+          const key = item.name || item.product || item.sku || null;
+          if (key) freq.set(key, (freq.get(key) || 0) + (item.qty || item.quantity || 1));
         }
-
-        if (freq.size > 0) {
-          let maxCount = 0;
-          for (const [name, count] of freq) {
-            if (count > maxCount) {
-              maxCount = count;
-              favoriteProduct = name;
-            }
-          }
+      }
+      if (freq.size > 0) {
+        let maxCount = 0;
+        for (const [name, count] of freq) {
+          if (count > maxCount) { maxCount = count; favoriteProduct = name; }
         }
       }
 
       return {
-        totalOrders: agg.totalOrders,
-        totalSpent: agg.totalSpent,
-        lastOrderDate: agg.lastOrderDate,
+        totalOrders: Number(agg.totalOrders),
+        totalSpent:  Number(agg.totalSpent),
+        lastOrderDate: agg.lastOrderDate ?? null,
         favoriteProduct,
       };
     },

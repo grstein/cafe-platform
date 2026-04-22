@@ -1,79 +1,86 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createTestDB, createTestRepos } from "../../helpers/db.mjs";
 
 describe("customers repo", () => {
-  let db, repos;
-  beforeEach(() => { db = createTestDB(); repos = createTestRepos(db); });
+  let sql, repos;
 
-  it("upsert creates new customer", () => {
-    repos.customers.upsert("5541999", { push_name: "Gus" });
-    const c = repos.customers.getByPhone("5541999");
+  before(async () => {
+    sql = await createTestDB();
+    repos = createTestRepos(sql);
+  });
+
+  after(async () => { await sql.end(); });
+
+  it("upsert creates new customer", async () => {
+    await repos.customers.upsert("5541999", { push_name: "Gus" });
+    const c = await repos.customers.getByPhone("5541999");
     assert.ok(c);
     assert.equal(c.push_name, "Gus");
     assert.ok(c.first_seen_at);
   });
 
-  it("upsert updates last_seen_at on existing", () => {
-    repos.customers.upsert("5541999", { push_name: "Gus" });
-    const c1 = repos.customers.getByPhone("5541999");
-    repos.customers.upsert("5541999", {});
-    const c2 = repos.customers.getByPhone("5541999");
+  it("upsert updates last_seen_at on existing", async () => {
+    await repos.customers.upsert("5541998", { push_name: "A" });
+    const c1 = await repos.customers.getByPhone("5541998");
+    await new Promise(r => setTimeout(r, 10));
+    await repos.customers.upsert("5541998", {});
+    const c2 = await repos.customers.getByPhone("5541998");
     assert.ok(c2.last_seen_at >= c1.last_seen_at);
   });
 
-  it("getByPhone returns undefined for unknown", () => {
-    assert.equal(repos.customers.getByPhone("000"), undefined);
+  it("getByPhone returns null for unknown", async () => {
+    assert.equal(await repos.customers.getByPhone("000"), null);
   });
 
-  it("updateInfo updates name and cep", () => {
-    repos.customers.upsert("55", {});
-    repos.customers.updateInfo("55", { name: "João", cep: "80000000" });
-    const c = repos.customers.getByPhone("55");
+  it("updateInfo updates name and cep", async () => {
+    await repos.customers.upsert("55001", {});
+    await repos.customers.updateInfo("55001", { name: "João", cep: "80000000" });
+    const c = await repos.customers.getByPhone("55001");
     assert.equal(c.name, "João");
     assert.equal(c.cep, "80000000");
   });
 
-  it("setNPS sets score", () => {
-    repos.customers.upsert("55", {});
-    repos.customers.setNPS("55", 9);
-    const c = repos.customers.getByPhone("55");
+  it("setNPS sets score", async () => {
+    await repos.customers.upsert("55002", {});
+    await repos.customers.setNPS("55002", 9);
+    const c = await repos.customers.getByPhone("55002");
     assert.equal(c.nps_score, 9);
   });
 
-  it("addTag and removeTag manipulate tags", () => {
-    repos.customers.upsert("55", {});
-    repos.customers.addTag("55", "vip");
-    repos.customers.addTag("55", "beta");
-    let c = repos.customers.getByPhone("55");
+  it("addTag and removeTag manipulate tags", async () => {
+    await repos.customers.upsert("55003", {});
+    await repos.customers.addTag("55003", "vip");
+    await repos.customers.addTag("55003", "beta");
+    let c = await repos.customers.getByPhone("55003");
     const tags = JSON.parse(c.tags);
     assert.ok(tags.includes("vip"));
     assert.ok(tags.includes("beta"));
-    repos.customers.removeTag("55", "vip");
-    c = repos.customers.getByPhone("55");
+    await repos.customers.removeTag("55003", "vip");
+    c = await repos.customers.getByPhone("55003");
     assert.ok(!JSON.parse(c.tags).includes("vip"));
   });
 
-  it("ensureReferralCode generates and is idempotent", () => {
-    repos.customers.upsert("55", {});
-    const code1 = repos.customers.ensureReferralCode("55");
+  it("ensureReferralCode generates and is idempotent", async () => {
+    await repos.customers.upsert("55004", {});
+    const code1 = await repos.customers.ensureReferralCode("55004");
     assert.ok(code1.startsWith("TEST-"));
-    const code2 = repos.customers.ensureReferralCode("55");
+    const code2 = await repos.customers.ensureReferralCode("55004");
     assert.equal(code1, code2);
   });
 
-  it("setAccessStatus changes status", () => {
-    repos.customers.upsert("55", {});
-    repos.customers.setAccessStatus("55", "blocked");
-    const c = repos.customers.getByPhone("55");
+  it("setAccessStatus changes status", async () => {
+    await repos.customers.upsert("55005", {});
+    await repos.customers.setAccessStatus("55005", "blocked");
+    const c = await repos.customers.getByPhone("55005");
     assert.equal(c.access_status, "blocked");
   });
 
-  it("findByAccessStatus filters correctly", () => {
-    repos.customers.upsert("1", {}); repos.customers.setAccessStatus("1", "active");
-    repos.customers.upsert("2", {}); repos.customers.setAccessStatus("2", "blocked");
-    repos.customers.upsert("3", {}); repos.customers.setAccessStatus("3", "active");
-    const active = repos.customers.findByAccessStatus("active");
-    assert.equal(active.length, 2);
+  it("findByAccessStatus filters correctly", async () => {
+    await repos.customers.upsert("55010", {}); await repos.customers.setAccessStatus("55010", "active");
+    await repos.customers.upsert("55011", {}); await repos.customers.setAccessStatus("55011", "blocked");
+    await repos.customers.upsert("55012", {}); await repos.customers.setAccessStatus("55012", "active");
+    const active = await repos.customers.findByAccessStatus("active");
+    assert.ok(active.length >= 2);
   });
 });

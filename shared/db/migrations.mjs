@@ -1,272 +1,206 @@
 /**
- * @fileoverview Migration definitions.
+ * @fileoverview PostgreSQL migration runner.
  *
- * Each migration is { version: number, description: string, up(db): void }.
- * The `db` parameter is a raw better-sqlite3 instance.
+ * Each migration is { version, description, up(sql) }.
+ * `sql` is a postgres.js tagged-template client.
+ * Migrations run in order and are idempotent (skipped if already applied).
  */
 
-/** @type {Array<{ version: number, description: string, up: (db: import('better-sqlite3').Database) => void }>} */
+/** @type {Array<{ version: number, description: string, up: (sql: import('postgres').Sql) => Promise<void> }>} */
 export const migrations = [
   {
     version: 1,
-    description: 'Register pre-existing orders table from v5',
-    up(db) {
-      // A tabela orders já existe em produção.
-      // Esta migration apenas valida a existência e registra v1.
-      const row = db
-        .prepare(
-          `SELECT name FROM sqlite_master WHERE type='table' AND name='orders'`
-        )
-        .get();
-
-      if (!row) {
-        // Ambiente novo (dev/test) — criar a tabela orders do zero
-        db.exec(`
-          CREATE TABLE orders (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone        TEXT NOT NULL,
-            name         TEXT,
-            status       TEXT NOT NULL DEFAULT 'pending',
-            items        TEXT NOT NULL,
-            subtotal     REAL NOT NULL,
-            discount     REAL NOT NULL DEFAULT 0,
-            shipping     REAL,
-            total        REAL NOT NULL,
-            cep          TEXT,
-            notes        TEXT,
-            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-            confirmed_at TEXT,
-            paid_at      TEXT,
-            shipped_at   TEXT,
-            tracking     TEXT,
-            cancelled_at TEXT
-          );
-          CREATE INDEX idx_orders_phone  ON orders(phone);
-          CREATE INDEX idx_orders_status ON orders(status);
-        `);
-      }
-    },
-  },
-
-  {
-    version: 2,
-    description: 'Create customers, products, cart_items tables + backfill',
-    up(db) {
-      // --- customers ---
-      db.exec(`
+    description: "Initial schema — customers, products, orders, cart_items",
+    async up(sql) {
+      await sql`
         CREATE TABLE IF NOT EXISTS customers (
-          id             INTEGER PRIMARY KEY AUTOINCREMENT,
-          phone          TEXT UNIQUE NOT NULL,
-          push_name      TEXT,
-          name           TEXT,
-          cpf            TEXT,
-          email          TEXT,
-          cep            TEXT,
-          address        TEXT,
-          city           TEXT,
-          state          TEXT,
-          tags           TEXT NOT NULL DEFAULT '[]',
-          preferences    TEXT NOT NULL DEFAULT '{}',
-          notes          TEXT,
-          first_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
-          last_seen_at   TEXT NOT NULL DEFAULT (datetime('now')),
-          total_orders   INTEGER NOT NULL DEFAULT 0,
-          total_spent    REAL NOT NULL DEFAULT 0,
-          nps_score      INTEGER,
-          nps_date       TEXT,
-          created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
-      `);
+          id               SERIAL PRIMARY KEY,
+          phone            TEXT UNIQUE NOT NULL,
+          push_name        TEXT,
+          name             TEXT,
+          cpf              TEXT,
+          email            TEXT,
+          cep              TEXT,
+          address          TEXT,
+          city             TEXT,
+          state            TEXT,
+          tags             TEXT NOT NULL DEFAULT '[]',
+          preferences      TEXT NOT NULL DEFAULT '{}',
+          notes            TEXT,
+          referral_code    TEXT UNIQUE,
+          referred_by_phone TEXT,
+          access_status    TEXT NOT NULL DEFAULT 'active',
+          first_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          total_orders     INTEGER NOT NULL DEFAULT 0,
+          total_spent      NUMERIC(10,2) NOT NULL DEFAULT 0,
+          nps_score        INTEGER,
+          nps_date         TIMESTAMPTZ,
+          created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_customers_referral_code ON customers(referral_code) WHERE referral_code IS NOT NULL`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_customers_access_status ON customers(access_status)`;
 
-      // --- products ---
-      db.exec(`
+      await sql`
         CREATE TABLE IF NOT EXISTS products (
-          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          id             SERIAL PRIMARY KEY,
           sku            TEXT UNIQUE NOT NULL,
           name           TEXT NOT NULL,
-          roaster        TEXT NOT NULL,
+          roaster        TEXT NOT NULL DEFAULT '',
           sca_score      INTEGER,
           profile        TEXT,
           origin         TEXT,
           process        TEXT,
-          price          REAL NOT NULL,
-          cost           REAL,
+          price          NUMERIC(10,2) NOT NULL,
+          cost           NUMERIC(10,2),
           weight         TEXT NOT NULL DEFAULT '250g',
           available      INTEGER NOT NULL DEFAULT 1,
           stock          INTEGER NOT NULL DEFAULT 0,
           highlight      TEXT,
           knowledge_file TEXT,
-          created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
-        CREATE INDEX IF NOT EXISTS idx_products_available ON products(available);
-      `);
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_products_available ON products(available)`;
 
-      // --- cart_items ---
-      db.exec(`
+      await sql`
+        CREATE TABLE IF NOT EXISTS orders (
+          id           SERIAL PRIMARY KEY,
+          phone        TEXT NOT NULL,
+          customer_id  INTEGER,
+          name         TEXT,
+          status       TEXT NOT NULL DEFAULT 'pending',
+          items        TEXT NOT NULL,
+          subtotal     NUMERIC(10,2) NOT NULL,
+          discount     NUMERIC(10,2) NOT NULL DEFAULT 0,
+          shipping     NUMERIC(10,2),
+          total        NUMERIC(10,2) NOT NULL,
+          cep          TEXT,
+          notes        TEXT,
+          created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          confirmed_at TIMESTAMPTZ,
+          paid_at      TIMESTAMPTZ,
+          shipped_at   TIMESTAMPTZ,
+          tracking     TEXT,
+          cancelled_at TIMESTAMPTZ
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_orders_phone ON orders(phone)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS cart_items (
-          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          id          SERIAL PRIMARY KEY,
           phone       TEXT NOT NULL,
           product_sku TEXT NOT NULL,
           qty         INTEGER NOT NULL DEFAULT 1,
-          unit_price  REAL NOT NULL,
-          added_at    TEXT NOT NULL DEFAULT (datetime('now')),
-          FOREIGN KEY (product_sku) REFERENCES products(sku),
+          unit_price  NUMERIC(10,2) NOT NULL,
+          added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           UNIQUE(phone, product_sku)
-        );
-        CREATE INDEX IF NOT EXISTS idx_cart_phone ON cart_items(phone);
-      `);
-
-      // --- customer_id em orders ---
-      // Verificar se a coluna já existe antes de adicionar
-      const cols = db.pragma('table_info(orders)');
-      const hasCustomerId = cols.some((c) => c.name === 'customer_id');
-      if (!hasCustomerId) {
-        db.exec(`ALTER TABLE orders ADD COLUMN customer_id INTEGER;`);
-      }
-
-      // --- Backfill: criar customers a partir de orders existentes ---
-      const distinctPhones = db
-        .prepare(
-          `SELECT DISTINCT phone, name FROM orders ORDER BY id ASC`
         )
-        .all();
-
-      const insertCustomer = db.prepare(`
-        INSERT OR IGNORE INTO customers (phone, name)
-        VALUES (?, ?)
-      `);
-
-      const getCustomerId = db.prepare(
-        `SELECT id FROM customers WHERE phone = ?`
-      );
-
-      const updateOrderCustomerId = db.prepare(
-        `UPDATE orders SET customer_id = ? WHERE phone = ? AND customer_id IS NULL`
-      );
-
-      for (const { phone, name } of distinctPhones) {
-        insertCustomer.run(phone, name);
-        const customer = getCustomerId.get(phone);
-        if (customer) {
-          updateOrderCustomerId.run(customer.id, phone);
-        }
-      }
-
-      // Recalcular contadores para cada customer recém-criado
-      const recalc = db.prepare(`
-        UPDATE customers SET
-          total_orders = (
-            SELECT COUNT(*) FROM orders
-            WHERE orders.phone = customers.phone
-              AND orders.status NOT IN ('cancelled', 'pending')
-          ),
-          total_spent = (
-            SELECT COALESCE(SUM(total), 0) FROM orders
-            WHERE orders.phone = customers.phone
-              AND orders.status NOT IN ('cancelled', 'pending')
-          )
-        WHERE phone = ?
-      `);
-
-      for (const { phone } of distinctPhones) {
-        recalc.run(phone);
-      }
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_cart_phone ON cart_items(phone)`;
     },
   },
 
   {
-    version: 3,
-    description: 'Referral system + access control',
-    up(db) {
-      // ── New columns on customers ────────────────────────
-      const cols = db.pragma('table_info(customers)');
-      const colNames = new Set(cols.map(c => c.name));
+    version: 2,
+    description: "Conversations and referrals tables",
+    async up(sql) {
+      await sql`
+        CREATE TABLE IF NOT EXISTS conversations (
+          id         SERIAL PRIMARY KEY,
+          phone      TEXT NOT NULL,
+          role       TEXT NOT NULL,
+          content    TEXT NOT NULL,
+          tool_name  TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_conversations_phone_date ON conversations(phone, created_at)`;
 
-      if (!colNames.has('referral_code')) {
-        db.exec(`ALTER TABLE customers ADD COLUMN referral_code TEXT;`);
-      }
-      if (!colNames.has('referred_by_phone')) {
-        db.exec(`ALTER TABLE customers ADD COLUMN referred_by_phone TEXT;`);
-      }
-      if (!colNames.has('access_status')) {
-        db.exec(`ALTER TABLE customers ADD COLUMN access_status TEXT DEFAULT 'active';`);
-      }
-
-      // Unique index on referral_code (partial — only non-NULL)
-      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_referral_code
-               ON customers(referral_code) WHERE referral_code IS NOT NULL;`);
-
-      // ── Mark existing customers as 'seed' ──────────────
-      db.exec(`UPDATE customers SET access_status = 'seed' WHERE access_status = 'active';`);
-
-      // ── Generate referral codes for existing customers ──
-      const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-      function genCode() {
-        let code = process.env.REFERRAL_CODE_PREFIX || 'REF-';
-        for (let i = 0; i < 4; i++) {
-          code += CHARS[Math.floor(Math.random() * CHARS.length)];
-        }
-        return code;
-      }
-
-      const existing = db.prepare(`SELECT phone FROM customers WHERE referral_code IS NULL`).all();
-      const setCode = db.prepare(`UPDATE customers SET referral_code = ? WHERE phone = ?`);
-      const checkCode = db.prepare(`SELECT 1 FROM customers WHERE referral_code = ?`);
-
-      for (const { phone } of existing) {
-        let code;
-        let attempts = 0;
-        do {
-          code = genCode();
-          attempts++;
-        } while (checkCode.get(code) && attempts < 100);
-        setCode.run(code, phone);
-      }
-
-      // ── Referrals table ────────────────────────────────
-      db.exec(`
+      await sql`
         CREATE TABLE IF NOT EXISTS referrals (
-          id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+          id                      SERIAL PRIMARY KEY,
           referrer_phone          TEXT NOT NULL,
           referred_phone          TEXT NOT NULL,
           referral_code_used      TEXT NOT NULL,
           status                  TEXT NOT NULL DEFAULT 'pending',
           reward_type             TEXT DEFAULT 'discount_percent',
-          reward_value            REAL DEFAULT 10,
+          reward_value            NUMERIC(10,2) DEFAULT 10,
           reward_applied_to_order INTEGER,
-          created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-          activated_at            TEXT,
-          rewarded_at             TEXT,
+          created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          activated_at            TIMESTAMPTZ,
+          rewarded_at             TIMESTAMPTZ,
           UNIQUE(referrer_phone, referred_phone)
-        );
-        CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_phone);
-        CREATE INDEX IF NOT EXISTS idx_referrals_referred ON referrals(referred_phone);
-        CREATE INDEX IF NOT EXISTS idx_referrals_code ON referrals(referral_code_used);
-      `);
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_phone)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_referrals_referred ON referrals(referred_phone)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_referrals_code ON referrals(referral_code_used)`;
     },
   },
 
-
   {
-    version: 4,
-    description: 'Conversation history table',
-    up(db) {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS conversations (
-          id         INTEGER PRIMARY KEY AUTOINCREMENT,
-          phone      TEXT NOT NULL,
-          role       TEXT NOT NULL,
-          content    TEXT NOT NULL,
-          tool_name  TEXT,
-          created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_conversations_phone_date
-          ON conversations(phone, created_at);
-      `);
+    version: 3,
+    description: "App config (single JSONB row) + allowlist table",
+    async up(sql) {
+      await sql`
+        CREATE TABLE IF NOT EXISTS app_config (
+          id         INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+          config     JSONB NOT NULL DEFAULT '{}',
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS allowlist (
+          pattern    TEXT PRIMARY KEY,
+          note       TEXT,
+          active     BOOLEAN NOT NULL DEFAULT true,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
     },
   },
 ];
+
+/**
+ * Run all pending migrations against the given postgres.js client.
+ *
+ * @param {import('postgres').Sql} sql
+ * @returns {Promise<void>}
+ */
+export async function runMigrations(sql) {
+  // Ensure version tracking table exists
+  await sql`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      version    INTEGER PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+
+  const [row] = await sql`SELECT COALESCE(MAX(version), 0) AS current FROM schema_version`;
+  const currentVersion = Number(row.current);
+
+  const pending = migrations
+    .filter((m) => m.version > currentVersion)
+    .sort((a, b) => a.version - b.version);
+
+  if (pending.length === 0) return;
+
+  for (const migration of pending) {
+    console.log(`[db] Applying migration v${migration.version}: ${migration.description}`);
+    await sql.begin(async (tx) => {
+      await migration.up(tx);
+      await tx`INSERT INTO schema_version (version) VALUES (${migration.version})`;
+    });
+  }
+
+  console.log(`[db] Migrations complete (applied ${pending.length})`);
+}

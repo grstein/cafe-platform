@@ -1,20 +1,22 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createTestDB, createTestRepos, seedCustomer } from "../../helpers/db.mjs";
-import { PHONES, TENANT_CONFIG } from "../../helpers/fixtures.mjs";
+import { PHONES, APP_CONFIG } from "../../helpers/fixtures.mjs";
 import { createReferralTools } from "../../../shared/tools/referral-tools.mjs";
 
 describe("referral tools", () => {
-  let repos, tools;
-  const phone = PHONES.gustavo;
+  let sql, repos, tools;
+  const phone = PHONES.primary;
   const findTool = (name) => tools.find(t => t.name === name);
 
-  beforeEach(() => {
-    const db = createTestDB();
-    repos = createTestRepos(db);
-    seedCustomer(db, { phone });
-    tools = createReferralTools(phone, repos, TENANT_CONFIG.bot_phone);
+  before(async () => {
+    sql = await createTestDB();
+    repos = createTestRepos(sql);
+    await seedCustomer(sql, { phone });
+    tools = createReferralTools(phone, repos, APP_CONFIG.bot_phone);
   });
+
+  after(async () => { await sql.end(); });
 
   it("invite_customer creates referral", async () => {
     const r = await findTool("invite_customer").execute("c1", {
@@ -22,17 +24,15 @@ describe("referral tools", () => {
       invited_name: "João",
     });
     assert.ok(r.content[0].text.includes("liberado"));
-    const ref = repos.referrals.getByReferred(PHONES.unknown);
+    const ref = await repos.referrals.getByReferred(PHONES.unknown);
     assert.ok(ref);
     assert.equal(ref.referrer_phone, phone);
   });
 
-  it("invite_customer for existing customer", async () => {
-    repos.customers.upsert(PHONES.beta, { push_name: "Beta" });
-    repos.customers.setAccessStatus(PHONES.beta, "active");
-    const r = await findTool("invite_customer").execute("c1", {
-      invited_phone: PHONES.beta,
-    });
+  it("invite_customer for existing active customer", async () => {
+    await repos.customers.upsert(PHONES.secondary, { push_name: "Beta" });
+    await repos.customers.setAccessStatus(PHONES.secondary, "active");
+    const r = await findTool("invite_customer").execute("c1", { invited_phone: PHONES.secondary });
     assert.ok(r.details.alreadyExists);
   });
 

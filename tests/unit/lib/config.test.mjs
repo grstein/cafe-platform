@@ -1,89 +1,86 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import { createTestDB } from "../../helpers/db.mjs";
+import { APP_CONFIG } from "../../helpers/fixtures.mjs";
 
-describe("config", () => {
-  let tmpDir;
-  let origTenantsDir;
-  let origTenantId;
+describe("config (DB-backed)", () => {
+  let sql;
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "config-test-"));
-    origTenantsDir = process.env.TENANTS_DIR;
-    origTenantId = process.env.TENANT_ID;
-    process.env.TENANTS_DIR = tmpDir;
-    process.env.TENANT_ID = "test-tenant";
+  before(async () => {
+    sql = await createTestDB(); // seeds app_config with APP_CONFIG
   });
 
-  afterEach(async () => {
-    if (origTenantsDir === undefined) delete process.env.TENANTS_DIR;
-    else process.env.TENANTS_DIR = origTenantsDir;
-    if (origTenantId === undefined) delete process.env.TENANT_ID;
-    else process.env.TENANT_ID = origTenantId;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  after(async () => { await sql.end(); });
+
+  beforeEach(async () => {
+    // Reset cache between tests
     const { clearConfig } = await import("../../../shared/lib/config.mjs");
     clearConfig();
   });
 
-  it("returns defaults when no tenant.json exists", async () => {
+  it("loadConfig reads from app_config table", async () => {
+    const { loadConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
+    clearConfig();
+    const cfg = await loadConfig(sql);
+    assert.equal(cfg.display_name, APP_CONFIG.display_name);
+    assert.equal(cfg.llm.model, APP_CONFIG.llm.model);
+  });
+
+  it("getConfig() returns cached result after loadConfig()", async () => {
+    const { loadConfig, getConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
+    clearConfig();
+    await loadConfig(sql);
+    const a = getConfig();
+    const b = getConfig();
+    assert.equal(a, b); // same object reference
+  });
+
+  it("getConfig() throws if loadConfig() was not called", async () => {
     const { getConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
     clearConfig();
-    const cfg = getConfig();
+    assert.throws(() => getConfig(), /loadConfig/);
+  });
+
+  it("loadConfig() is a no-op on second call (uses cache)", async () => {
+    const { loadConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
+    clearConfig();
+    const first = await loadConfig(sql);
+    const second = await loadConfig(sql);
+    assert.equal(first, second);
+  });
+
+  it("clearConfig() invalidates cache", async () => {
+    const { loadConfig, getConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
+    clearConfig();
+    await loadConfig(sql);
+    clearConfig();
+    assert.throws(() => getConfig(), /loadConfig/);
+  });
+
+  it("updateConfig() merges partial and persists to DB", async () => {
+    const { loadConfig, updateConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
+    clearConfig();
+    await loadConfig(sql);
+    await updateConfig(sql, { display_name: "Updated Name" });
+    const cfg = await import("../../../shared/lib/config.mjs").then(m => m.getConfig());
+    assert.equal(cfg.display_name, "Updated Name");
+    assert.equal(cfg.llm.model, APP_CONFIG.llm.model); // unchanged
+  });
+
+  it("loadConfig() falls back to defaults when DB row is empty", async () => {
+    const { loadConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
+    // Clear app_config
+    await sql`DELETE FROM app_config`;
+    clearConfig();
+    // No config.json in test CONFIG_DIR → uses defaults
+    const cfg = await loadConfig(sql);
     assert.equal(cfg.session.ttl_minutes, 30);
-    assert.equal(cfg.tenant_id, "test-tenant");
-  });
-
-  it("merges tenant.json over defaults", async () => {
-    const dir = path.join(tmpDir, "test-tenant");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "tenant.json"), JSON.stringify({ llm: { thinking: "low" } }));
-    const { getConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
-    clearConfig();
-    const cfg = getConfig();
-    assert.equal(cfg.llm.thinking, "low");
-    assert.equal(cfg.llm.provider, "openrouter"); // default preserved
-  });
-
-  it("caches result on repeated calls", async () => {
-    const { getConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
-    clearConfig();
-    const a = getConfig();
-    const b = getConfig();
-    assert.equal(a, b);
-  });
-
-  it("clearConfig invalidates cache", async () => {
-    const dir = path.join(tmpDir, "test-tenant");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "tenant.json"), JSON.stringify({ display_name: "v1" }));
-    const { getConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
-    clearConfig();
-    const a = getConfig();
-    assert.equal(a.display_name, "v1");
-    clearConfig();
-    fs.writeFileSync(path.join(dir, "tenant.json"), JSON.stringify({ display_name: "v2" }));
-    const b = getConfig();
-    assert.equal(b.display_name, "v2");
-  });
-
-  it("sets _paths correctly", async () => {
-    const { getConfig, clearConfig } = await import("../../../shared/lib/config.mjs");
-    clearConfig();
-    const cfg = getConfig();
-    assert.equal(cfg._paths.allowlist, path.join(tmpDir, "test-tenant", "allowlist.txt"));
-    assert.equal(cfg._paths.catalog, path.join(tmpDir, "test-tenant", "catalogo.csv"));
-  });
-
-  it("getTenantId throws when TENANT_ID is unset", async () => {
-    const saved = process.env.TENANT_ID;
-    delete process.env.TENANT_ID;
-    try {
-      const { getTenantId } = await import("../../../shared/lib/config.mjs");
-      assert.throws(() => getTenantId(), /TENANT_ID/);
-    } finally {
-      process.env.TENANT_ID = saved;
-    }
+    assert.equal(cfg.llm.provider, "openrouter");
+    // Re-seed for other tests
+    await sql`
+      INSERT INTO app_config (id, config)
+      VALUES (1, ${JSON.stringify({ display_name: APP_CONFIG.display_name, llm: APP_CONFIG.llm, session: APP_CONFIG.session, behavior: APP_CONFIG.behavior, pix: APP_CONFIG.pix, bot_phone: APP_CONFIG.bot_phone, available_models: APP_CONFIG.available_models })}::jsonb)
+      ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config
+    `;
   });
 });

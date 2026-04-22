@@ -1,28 +1,21 @@
 /**
  * @fileoverview Shared test fixtures — phones, products, configs, payloads.
- *
- * These fixtures are intentionally generic. No real phone numbers, names,
- * or business-identifying data should live here. The SKU prefix "CDA-" is
- * the test suite's convention and is set via tests/setup.mjs
- * (ORDER_PREFIX, REFERRAL_CODE_PREFIX) — tenant-specific values come from
- * environment variables at runtime.
  */
 
 import { createEnvelope } from "../../shared/lib/envelope.mjs";
 
-// ── Phone numbers (neutral test values) ───────────────────────
+// ── Phone numbers ──────────────────────────────────────────────
 export const PHONES = {
-  primary: "5500000000001",
+  primary:   "5500000000001",
   secondary: "5500000000002",
-  unknown: "5500000000099",
-  blocked: "5500000000098",
+  unknown:   "5500000000099",
+  blocked:   "5500000000098",
 };
-
-// Legacy aliases kept so existing tests keep compiling.
+// Legacy aliases
 PHONES.gustavo = PHONES.primary;
-PHONES.beta = PHONES.secondary;
+PHONES.beta    = PHONES.secondary;
 
-// ── Sample products used across tests ─────────────────────────
+// ── Sample products ────────────────────────────────────────────
 export const PRODUCTS = {
   mrChocolate: {
     sku: "CDA-MOKA-MRCHOC-250",
@@ -65,11 +58,9 @@ export const PRODUCTS = {
   },
 };
 
-// ── App config (single tenant) ────────────────────────────────
+// ── App config ─────────────────────────────────────────────────
 export const APP_CONFIG = {
-  tenant_id: "test-tenant",
-  display_name: "Test Tenant",
-  status: "active",
+  display_name: "Test Store",
   llm: { provider: "openrouter", model: "anthropic/claude-haiku-4.5", thinking: "medium" },
   session: { ttl_minutes: 30, soft_limit: 40, hard_limit: 60, debounce_ms: 2500 },
   behavior: { humanize_delay_min_ms: 2000, humanize_delay_max_ms: 6000, rate_limit_per_min: 8, typing_indicator: true },
@@ -79,21 +70,16 @@ export const APP_CONFIG = {
     { id: "anthropic/claude-haiku-4.5", name: "Claude Haiku 4.5", emoji: "🐇" },
     { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6", emoji: "🧠" },
   ],
-  _paths: {
-    root: "/tmp/test-tenants/test-tenant",
-    allowlist: "/tmp/test-tenants/test-tenant/allowlist.txt",
-    catalog: "/tmp/test-tenants/test-tenant/catalogo.csv",
-  },
 };
 
-// Keep TENANT_CONFIG as alias for backward compatibility with existing tests
+// Keep alias for backward compat
 export const TENANT_CONFIG = APP_CONFIG;
 
-// ── Incoming WhatsApp payload ─────────────────────────────────
+// ── Incoming WhatsApp payload ──────────────────────────────────
 export function EVOLUTION_PAYLOAD(text, phone, overrides = {}) {
   const p = phone || PHONES.primary;
   return {
-    instance: overrides.instance || "Test Tenant",
+    instance: overrides.instance || "Test Store",
     data: {
       key: {
         remoteJid: `${p}@s.whatsapp.net`,
@@ -107,22 +93,22 @@ export function EVOLUTION_PAYLOAD(text, phone, overrides = {}) {
   };
 }
 
-// ── Envelope ──────────────────────────────────────────────────
+// ── Envelope factory ───────────────────────────────────────────
 export function ENVELOPE(overrides = {}) {
   const env = createEnvelope({
-    phone: overrides.phone || PHONES.primary,
-    channel: overrides.channel || "whatsapp",
-    text: overrides.text || "Quero um café",
+    phone:    overrides.phone    || PHONES.primary,
+    channel:  overrides.channel  || "whatsapp",
+    text:     overrides.text     || "Quero um café",
     pushName: overrides.pushName || "Customer",
   });
   if (overrides.context) Object.assign(env.context, overrides.context);
-  if (overrides.stage) env.metadata.stage = overrides.stage;
+  if (overrides.stage)   env.metadata.stage = overrides.stage;
   return env;
 }
 
-// ── PIX config ────────────────────────────────────────────────
+// ── PIX config ─────────────────────────────────────────────────
 export const PIX_CONFIG = {
-  key: "00000000000",
+  key:  "00000000000",
   name: "TEST MERCHANT",
   city: "TEST CITY",
 };

@@ -1,7 +1,7 @@
 /**
  * @fileoverview Agent Consumer — LLM processing via Pi Agent SDK.
  *
- * Reads from: agent.enriched (msg.flow enriched)
+ * Reads from:   agent.enriched (msg.flow enriched)
  * Publishes to: msg.flow response
  */
 
@@ -16,8 +16,8 @@ import {
 
 import { connect, publish, consume, ack, nack } from "../shared/lib/rabbitmq.mjs";
 import { parseFromRabbitMQ, setStage, setResponse } from "../shared/lib/envelope.mjs";
-import { getConfig } from "../shared/lib/config.mjs";
-import { getDB } from "../shared/db/connection.mjs";
+import { loadConfig, getConfig } from "../shared/lib/config.mjs";
+import { getDB, initDB } from "../shared/db/connection.mjs";
 import { createConversationRepo } from "../shared/db/conversations.mjs";
 import { createCustomerRepo } from "../shared/db/customers.mjs";
 import { createProductRepo } from "../shared/db/products.mjs";
@@ -33,30 +33,28 @@ import { createReferralTools } from "../shared/tools/referral-tools.mjs";
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const QUEUE = "agent.enriched";
 const CONFIG_DIR = process.env.CONFIG_DIR || "/config/pi";
-const WORKSPACE = process.env.TENANTS_DIR || "./tenants";
+// Sessions are written to a writable volume, not inside pi-config (which may be :ro)
 const SESSIONS_DIR = path.join(process.env.DATA_DIR || "/data", "pi-sessions");
 
-// Pi Agent SDK setup (shared across invocations)
+// Pi Agent SDK — shared across invocations
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage, path.join(CONFIG_DIR, "models.json"));
-const settingsManager = SettingsManager.create(WORKSPACE, CONFIG_DIR);
+const settingsManager = SettingsManager.create(CONFIG_DIR, CONFIG_DIR);
 
-// Session cache per phone (TTL-based)
+// Session cache per phone
 const sessionCache = new Map();
 
-// Repos initialized once
 let repos = null;
-
 function getRepos() {
   if (repos) return repos;
-  const db = getDB(process.env.DATA_DIR);
+  const sql = getDB();
   repos = {
-    customers: createCustomerRepo(db),
-    products: createProductRepo(db),
-    orders: createOrderRepo(db),
-    cart: createCartRepo(db),
-    referrals: createReferralRepo(db),
-    conversations: createConversationRepo(db),
+    customers:     createCustomerRepo(sql),
+    products:      createProductRepo(sql),
+    orders:        createOrderRepo(sql),
+    cart:          createCartRepo(sql),
+    referrals:     createReferralRepo(sql),
+    conversations: createConversationRepo(sql),
   };
   return repos;
 }
@@ -89,8 +87,9 @@ function resolveModel(config, customer) {
 
 async function main() {
   console.log("🟢 Agent consumer starting...");
+  await initDB();
+  await loadConfig(getDB());
   const { connection, channel } = await connect(RABBITMQ_URI);
-  const config = getConfig();
 
   consume(channel, QUEUE, async (msg) => {
     if (!msg) return;
@@ -100,7 +99,7 @@ async function main() {
       const { phone } = envelope;
       console.log(`[agent] Received ${phone} text="${envelope.payload?.merged_text?.substring(0, 50)}"`);
 
-      const appConfig = envelope.context.app_config || config;
+      const appConfig = envelope.context.app_config || getConfig();
       const customer = envelope.context.customer;
       const contextBlock = envelope.context.context_block || "";
       const r = getRepos();
@@ -108,21 +107,16 @@ async function main() {
       const displayName = appConfig.display_name || "";
 
       const model = resolveModel(appConfig, customer);
-      if (!model) {
-        console.error("[agent] No model available");
-        nack(channel, msg, false);
-        return;
-      }
+      if (!model) { console.error("[agent] No model available"); nack(channel, msg, false); return; }
 
       const userText = envelope.payload.merged_text;
       const enrichedPrompt = contextBlock ? `${contextBlock}\n\n${userText}` : userText;
       const thinking = appConfig.llm?.thinking || "medium";
-      const tenantWorkspace = path.join(WORKSPACE, config.tenant_id);
+      const ttlMs = (appConfig.session?.ttl_minutes || 30) * 60 * 1000;
 
       // Reuse or create session
       const cached = sessionCache.get(phone);
       const now = Date.now();
-      const ttlMs = (appConfig.session?.ttl_minutes || 30) * 60 * 1000;
 
       if (cached && now - cached.lastUsed < ttlMs) {
         session = cached.session;
@@ -132,16 +126,16 @@ async function main() {
         if (cached?.session) { try { cached.session.dispose(); } catch {} }
         const customTools = buildCustomTools(phone, r, botPhone, displayName);
         console.log(`[agent] Creating session model=${model?.id} tools=${customTools.length}`);
-        const sessionDir = path.join(SESSIONS_DIR, config.tenant_id, phone);
+        const sessionDir = path.join(SESSIONS_DIR, phone);
         const result = await createAgentSession({
           model,
           thinking,
-          cwd: tenantWorkspace,
+          cwd: CONFIG_DIR,       // SDK walks up from here to find AGENTS.md
           agentDir: CONFIG_DIR,
           authStorage,
           modelRegistry,
           settingsManager,
-          sessionManager: SessionManager.create(tenantWorkspace, sessionDir),
+          sessionManager: SessionManager.create(CONFIG_DIR, sessionDir),
           customTools,
         });
         session = result.session;
@@ -153,9 +147,9 @@ async function main() {
       const responseText = session.getLastAssistantText() || "";
       console.log(`[agent] Response (${responseText.length} chars): "${responseText.substring(0, 100)}"`);
 
-      // Save conversation history
-      r.conversations.addMessage(phone, "user", userText);
-      r.conversations.addMessage(phone, "assistant", responseText);
+      // Persist conversation history
+      await r.conversations.addMessage(phone, "user", userText);
+      await r.conversations.addMessage(phone, "assistant", responseText);
 
       setResponse(envelope, responseText);
       setStage(envelope, "response");

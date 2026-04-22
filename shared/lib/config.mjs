@@ -1,9 +1,15 @@
 /**
- * @fileoverview Single-tenant configuration loader.
+ * @fileoverview App configuration — stored in the `app_config` DB table.
  *
- * The active tenant is selected via the TENANT_ID environment variable.
- * Config is read from `${TENANTS_DIR}/${TENANT_ID}/tenant.json`, merged
- * over built-in defaults, and cached on first access.
+ * Boot flow:
+ *   1. `loadConfig(sql)` is called once per consumer at startup.
+ *   2. It reads the single row from `app_config`.
+ *   3. If the table is empty, it falls back to `CONFIG_DIR/config.json`
+ *      and auto-seeds that file's contents into the DB.
+ *   4. The merged config is cached; `getConfig()` returns it synchronously.
+ *
+ * To update config at runtime: UPDATE app_config SET config = '...', updated_at = NOW()
+ * and restart consumers (or add a hot-reload mechanism later).
  */
 
 import fs from "fs";
@@ -22,46 +28,80 @@ const DEFAULTS = {
 let _config = null;
 
 /**
- * Returns the active tenant id from the TENANT_ID env var.
- * Throws if unset — callers must ensure the variable is defined at boot.
- * @returns {string}
+ * Load config from the `app_config` table (once per process).
+ * Falls back to `CONFIG_DIR/config.json` and auto-seeds the DB if the table
+ * is empty. Safe to call multiple times — cached after first load.
+ *
+ * @param {import('postgres').Sql} sql
+ * @returns {Promise<object>}
  */
-export function getTenantId() {
-  const id = process.env.TENANT_ID;
-  if (!id) {
-    throw new Error("TENANT_ID environment variable is required");
-  }
-  return id;
-}
-
-/**
- * Returns the single app config, loading and caching on first call.
- * @returns {object}
- */
-export function getConfig() {
+export async function loadConfig(sql) {
   if (_config) return _config;
 
-  const tenantId = getTenantId();
-  const tenantsDir = process.env.TENANTS_DIR || "./tenants";
-  const configFile = path.join(tenantsDir, tenantId, "tenant.json");
+  // 1. Try DB
+  const [row] = await sql`SELECT config FROM app_config WHERE id = 1`;
+  if (row?.config) {
+    // postgres.js may return JSONB as an object or string depending on transform config
+    const parsed = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
+    if (Object.keys(parsed).length > 0) {
+      _config = deepMerge(structuredClone(DEFAULTS), parsed);
+      return _config;
+    }
+  }
 
+  // 2. Fall back to JSON file + auto-seed DB
+  const configDir = process.env.CONFIG_DIR || "/config/pi";
+  const configFile = path.join(configDir, "config.json");
   let raw = {};
   if (fs.existsSync(configFile)) {
     raw = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+    console.log(`[config] Seeding app_config from ${configFile}`);
+    try {
+      await sql`
+        INSERT INTO app_config (id, config)
+        VALUES (1, ${JSON.stringify(raw)}::jsonb)
+        ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = NOW()
+      `;
+    } catch (err) {
+      console.warn("[config] Could not seed app_config:", err.message);
+    }
   }
 
   _config = deepMerge(structuredClone(DEFAULTS), raw);
-  _config.tenant_id = tenantId;
-  _config._paths = {
-    root: path.join(tenantsDir, tenantId),
-    allowlist: path.join(tenantsDir, tenantId, "allowlist.txt"),
-    catalog: path.join(tenantsDir, tenantId, "catalogo.csv"),
-  };
-
   return _config;
 }
 
-/** Clears the config cache (useful in tests). */
+/**
+ * Return the cached config. Throws if `loadConfig(sql)` has not been called yet.
+ * @returns {object}
+ */
+export function getConfig() {
+  if (!_config) throw new Error("Config not loaded. Call await loadConfig(sql) at consumer startup.");
+  return _config;
+}
+
+/**
+ * Update config in the DB and refresh the in-memory cache.
+ *
+ * @param {import('postgres').Sql} sql
+ * @param {object} partial - Partial config object (deep-merged over current).
+ * @returns {Promise<object>} New merged config.
+ */
+export async function updateConfig(sql, partial) {
+  const current = _config ? structuredClone(_config) : structuredClone(DEFAULTS);
+  // Remove internal fields before storing
+  delete current._paths;
+  const merged = deepMerge(current, partial);
+  await sql`
+    INSERT INTO app_config (id, config)
+    VALUES (1, ${JSON.stringify(merged)}::jsonb)
+    ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = NOW()
+  `;
+  _config = merged;
+  return _config;
+}
+
+/** Clears the in-memory cache. Call `loadConfig(sql)` again to reload. */
 export function clearConfig() {
   _config = null;
 }

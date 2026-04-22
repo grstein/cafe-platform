@@ -25,12 +25,14 @@
     {
       "id": "anthropic/claude-haiku-4.5",
       "name": "Claude Haiku 4.5",
+      "emoji": "🐇",
       "reasoning": true,
       "supportsReasoningEffort": true
     },
     {
       "id": "anthropic/claude-sonnet-4.6",
       "name": "Claude Sonnet 4.6",
+      "emoji": "🧠",
       "reasoning": true,
       "supportsReasoningEffort": true
     }

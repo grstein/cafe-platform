@@ -9,7 +9,8 @@
 
 import { connect, publish, consume, ack, nack } from "../shared/lib/rabbitmq.mjs";
 import { parseFromRabbitMQ } from "../shared/lib/envelope.mjs";
-import { getConfig } from "../shared/lib/config.mjs";
+import { loadConfig, getConfig } from "../shared/lib/config.mjs";
+import { getDB, initDB } from "../shared/db/connection.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 
@@ -73,11 +74,12 @@ async function handleMessage(channel, msg, config) {
 
 async function main() {
   console.log("🟢 Sender consumer starting...");
+  await initDB();
+  await loadConfig(getDB());
   const { connection, channel } = await connect(RABBITMQ_URI);
-  const config = getConfig();
 
-  consume(channel, "sender.response", (msg) => handleMessage(channel, msg, config));
-  consume(channel, "sender.outgoing", (msg) => handleMessage(channel, msg, config));
+  consume(channel, "sender.response", (msg) => handleMessage(channel, msg, getConfig()));
+  consume(channel, "sender.outgoing", (msg) => handleMessage(channel, msg, getConfig()));
 
   console.log("🟢 Sender listening on sender.response + sender.outgoing");
   for (const sig of ["SIGINT", "SIGTERM"]) {

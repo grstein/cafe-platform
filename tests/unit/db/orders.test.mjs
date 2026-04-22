@@ -1,60 +1,67 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createTestDB, createTestRepos, seedProducts } from "../../helpers/db.mjs";
 
 describe("orders repo", () => {
-  let db, repos;
-  beforeEach(() => { db = createTestDB(); repos = createTestRepos(db); seedProducts(db); });
+  let sql, repos;
+
+  before(async () => {
+    sql = await createTestDB();
+    repos = createTestRepos(sql);
+    await seedProducts(sql);
+  });
+
+  after(async () => { await sql.end(); });
 
   const ITEMS = JSON.stringify([{ sku: "CDA-MOKA-MRCHOC-250", name: "Mr. Chocolate", qty: 2, unit_price: 48 }]);
 
-  it("create inserts order with pending status", () => {
-    const id = repos.orders.create("55", { name: "Jo", items: ITEMS, subtotal: 96, total: 96 });
+  it("create inserts order with pending status", async () => {
+    const id = await repos.orders.create("551", { name: "Jo", items: ITEMS, subtotal: 96, total: 96 });
     assert.ok(id > 0);
-    const o = repos.orders.getById(id);
+    const o = await repos.orders.getById(id);
     assert.equal(o.status, "pending");
-    assert.equal(o.total, 96);
+    assert.ok(Math.abs(Number(o.total) - 96) < 0.01);
   });
 
-  it("getPending returns pending or undefined", () => {
-    repos.orders.create("55", { items: ITEMS, subtotal: 96, total: 96 });
-    assert.ok(repos.orders.getPending("55"));
-    assert.equal(repos.orders.getPending("99"), undefined);
+  it("getPending returns pending or null", async () => {
+    await repos.orders.create("552", { items: ITEMS, subtotal: 96, total: 96 });
+    assert.ok(await repos.orders.getPending("552"));
+    assert.equal(await repos.orders.getPending("99999"), null);
   });
 
-  it("confirm changes status and sets confirmed_at", () => {
-    repos.orders.create("55", { items: ITEMS, subtotal: 96, total: 96 });
-    const o = repos.orders.confirm("55");
+  it("confirm changes status and sets confirmed_at", async () => {
+    await repos.orders.create("553", { items: ITEMS, subtotal: 96, total: 96 });
+    const o = await repos.orders.confirm("553");
     assert.ok(o);
     assert.equal(o.status, "confirmed");
     assert.ok(o.confirmed_at);
   });
 
-  it("confirm returns undefined when no pending", () => {
-    assert.equal(repos.orders.confirm("55"), undefined);
+  it("confirm returns null when no pending", async () => {
+    assert.equal(await repos.orders.confirm("99998"), null);
   });
 
-  it("cancel changes status", () => {
-    repos.orders.create("55", { items: ITEMS, subtotal: 96, total: 96 });
-    const o = repos.orders.cancel("55");
+  it("cancel changes status", async () => {
+    await repos.orders.create("554", { items: ITEMS, subtotal: 96, total: 96 });
+    const o = await repos.orders.cancel("554");
     assert.ok(o);
     assert.equal(o.status, "cancelled");
   });
 
-  it("listByPhone returns orders with filter", () => {
-    repos.orders.create("55", { items: ITEMS, subtotal: 96, total: 96 });
-    repos.orders.confirm("55");
-    repos.orders.create("55", { items: ITEMS, subtotal: 48, total: 48 });
-    const all = repos.orders.listByPhone("55", {});
+  it("listByPhone returns orders with filter", async () => {
+    await repos.orders.create("555", { items: ITEMS, subtotal: 96, total: 96 });
+    await repos.orders.confirm("555");
+    await repos.orders.create("555", { items: ITEMS, subtotal: 48, total: 48 });
+    const all = await repos.orders.listByPhone("555", {});
     assert.equal(all.length, 2);
-    const pending = repos.orders.listByPhone("55", { status: "pending" });
+    const pending = await repos.orders.listByPhone("555", { status: "pending" });
     assert.equal(pending.length, 1);
   });
 
-  it("getStats calculates totals", () => {
-    repos.orders.create("55", { items: ITEMS, subtotal: 96, total: 96 });
-    repos.orders.confirm("55");
-    const s = repos.orders.getStats("55");
+  it("getStats calculates totals", async () => {
+    await repos.orders.create("556", { items: ITEMS, subtotal: 96, total: 96 });
+    await repos.orders.confirm("556");
+    const s = await repos.orders.getStats("556");
     assert.ok(s.totalOrders >= 1);
   });
 });

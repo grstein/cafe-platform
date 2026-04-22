@@ -1,21 +1,23 @@
 # ──────────────────────────────────────────────────────────────
 # cafe-platform — local / CI compose file.
 #
-# For local dev: copy `examples/tenants/demo-tenant` → `tenants/demo-tenant`
-# and `examples/pi-config` → `pi-config`, then `docker compose up -d`.
+# For local dev:
+#   cp -r examples/pi-config pi-config
+#   docker compose up -d
 #
 # For production, use the companion tenant repo's docker-compose.prod.yml
 # which pins `image: ghcr.io/…/cafe-platform` and named volumes.
 # ──────────────────────────────────────────────────────────────
 
 services:
+  # ── Infrastructure ─────────────────────────────────────────────────
   rabbitmq:
     container_name: platform_rabbitmq
     image: rabbitmq:3-management-alpine
     restart: unless-stopped
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_USER:  ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS:  ${RABBITMQ_PASSWORD}
       RABBITMQ_DEFAULT_VHOST: evolution
     ports: ["127.0.0.1:15672:15672", "127.0.0.1:5672:5672"]
     volumes: [rabbitmq_data:/var/lib/rabbitmq]
@@ -28,24 +30,44 @@ services:
       start_period: 30s
     deploy: { resources: { limits: { memory: 512M } } }
 
-  # ── WhatsApp Bridge (Baileys) ──────────────────────────────────
+  database:
+    container_name: platform_database
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-cafe}
+      POSTGRES_USER:     ${POSTGRES_USER:-cafe}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cafe} -d ${POSTGRES_DB:-cafe}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy: { resources: { limits: { memory: 512M } } }
+
+  # ── WhatsApp Bridge (Baileys) ──────────────────────────────────────
   whatsapp-bridge:
     container_name: platform_whatsapp_bridge
     build: { context: . }
     command: ["node", "services/whatsapp-bridge.mjs"]
     restart: unless-stopped
     depends_on:
-      rabbitmq: { condition: service_healthy }
+      rabbitmq:  { condition: service_healthy }
+      database:  { condition: service_healthy }
     ports: ["127.0.0.1:3001:3001"]
     env_file: [.env]
-    volumes: &bridge_vols
-      - ./tenants:/tenants:ro
+    volumes:
       - ./data:/data
       - ./logs:/logs
+      - ./pi-config:/config/pi:ro
     networks: [platform]
     deploy: { resources: { limits: { memory: 512M } } }
 
-  # ── Consumers (shared image, different entrypoints) ────────────
+  # ── Consumers (shared image, different entrypoints) ────────────────
   gateway:
     container_name: platform_gateway
     build: { context: . }
@@ -53,9 +75,9 @@ services:
     restart: unless-stopped
     depends_on:
       rabbitmq: { condition: service_healthy }
+      database: { condition: service_healthy }
     env_file: [.env]
     volumes: &consumer_vols
-      - ./tenants:/tenants:ro
       - ./data:/data
       - ./logs:/logs
       - ./pi-config:/config/pi:ro
@@ -67,7 +89,8 @@ services:
     build: { context: . }
     command: ["node", "consumers/aggregator.mjs"]
     restart: unless-stopped
-    depends_on: { rabbitmq: { condition: service_healthy } }
+    depends_on:
+      rabbitmq: { condition: service_healthy }
     env_file: [.env]
     volumes: *consumer_vols
     networks: [platform]
@@ -78,7 +101,9 @@ services:
     build: { context: . }
     command: ["node", "consumers/enricher.mjs"]
     restart: unless-stopped
-    depends_on: { rabbitmq: { condition: service_healthy } }
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      database: { condition: service_healthy }
     env_file: [.env]
     volumes: *consumer_vols
     networks: [platform]
@@ -89,7 +114,9 @@ services:
     build: { context: . }
     command: ["node", "consumers/agent.mjs"]
     restart: unless-stopped
-    depends_on: { rabbitmq: { condition: service_healthy } }
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      database: { condition: service_healthy }
     env_file: [.env]
     volumes: *consumer_vols
     networks: [platform]
@@ -112,7 +139,9 @@ services:
     build: { context: . }
     command: ["node", "consumers/analytics.mjs"]
     restart: unless-stopped
-    depends_on: { rabbitmq: { condition: service_healthy } }
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      database: { condition: service_healthy }
     env_file: [.env]
     volumes: *consumer_vols
     networks: [platform]
@@ -120,6 +149,7 @@ services:
 
 volumes:
   rabbitmq_data:
+  postgres_data:
 
 networks:
   platform:

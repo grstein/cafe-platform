@@ -1,0 +1,9 @@
+# Allowlist de números autorizados.
+# Um número por linha. Comentários começam com #.
+# Wildcards: 5541* autoriza todos os números com DDD 41.
+# Deixe vazio para exigir convite (indicação) para todo acesso.
+
+# Exemplos:
+# 5541999990001
+# 5541999990002
+# 5541*

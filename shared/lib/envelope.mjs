@@ -1,12 +1,10 @@
 import { randomUUID } from "crypto";
-import { getTenantId } from "./config.mjs";
 
 export function createEnvelope({ phone, channel = "whatsapp", text, pushName }) {
   const now = new Date().toISOString();
   return {
     id: randomUUID(),
     correlation_id: randomUUID(),
-    tenant_id: getTenantId(),
     phone,
     channel,
     timestamp: now,

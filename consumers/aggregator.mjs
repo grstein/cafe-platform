@@ -8,7 +8,8 @@
 
 import { connect, publish, consume, ack, nack } from "../shared/lib/rabbitmq.mjs";
 import { parseFromRabbitMQ, addMessage, setStage, createEnvelope } from "../shared/lib/envelope.mjs";
-import { getConfig } from "../shared/lib/config.mjs";
+import { loadConfig, getConfig } from "../shared/lib/config.mjs";
+import { getDB, initDB } from "../shared/db/connection.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const DEFAULT_DEBOUNCE_MS = 2500;
@@ -34,15 +35,16 @@ function startDebounce(channel, phone, ms) {
 
 async function main() {
   console.log("🟢 Aggregator consumer starting...");
+  await initDB();
+  await loadConfig(getDB());
   const { connection, channel } = await connect(RABBITMQ_URI);
-  const config = getConfig();
 
   consume(channel, "aggregator.validated", async (msg) => {
     if (!msg) return;
     try {
       const envelope = parseFromRabbitMQ(msg);
       const phone = envelope.phone;
-      const debounceMs = config.session?.debounce_ms || DEFAULT_DEBOUNCE_MS;
+      const debounceMs = getConfig().session?.debounce_ms || DEFAULT_DEBOUNCE_MS;
       const existing = phoneState.get(phone);
 
       if (!existing) {
@@ -81,7 +83,7 @@ async function main() {
           for (const buffered of state.buffer) addMessage(newEnvelope, buffered);
           state.envelope = newEnvelope;
           state.buffer = [];
-          startDebounce(channel, phone, config.session?.debounce_ms || DEFAULT_DEBOUNCE_MS);
+          startDebounce(channel, phone, getConfig().session?.debounce_ms || DEFAULT_DEBOUNCE_MS);
         } else {
           phoneState.delete(phone);
         }

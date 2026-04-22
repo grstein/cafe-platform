@@ -1,56 +1,63 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createTestDB, createTestRepos, seedProducts } from "../../helpers/db.mjs";
 
 describe("cart repo", () => {
-  let db, repos;
-  beforeEach(() => { db = createTestDB(); repos = createTestRepos(db); seedProducts(db); });
+  let sql, repos;
 
-  it("addItem inserts new item", () => {
-    repos.cart.addItem("55", "CDA-MOKA-MRCHOC-250", 2, 48);
-    const items = repos.cart.getItems("55");
+  before(async () => {
+    sql = await createTestDB();
+    repos = createTestRepos(sql);
+    await seedProducts(sql);
+  });
+
+  after(async () => { await sql.end(); });
+
+  it("addItem inserts new item", async () => {
+    await repos.cart.addItem("55", "CDA-MOKA-MRCHOC-250", 2, 48);
+    const items = await repos.cart.getItems("55");
     assert.equal(items.length, 1);
-    assert.equal(items[0].qty, 2);
+    assert.equal(Number(items[0].qty), 2);
   });
 
-  it("addItem upserts same SKU", () => {
-    repos.cart.addItem("55", "CDA-MOKA-MRCHOC-250", 1, 48);
-    repos.cart.addItem("55", "CDA-MOKA-MRCHOC-250", 3, 48);
-    const items = repos.cart.getItems("55");
+  it("addItem upserts same SKU", async () => {
+    await repos.cart.addItem("56", "CDA-MOKA-MRCHOC-250", 1, 48);
+    await repos.cart.addItem("56", "CDA-MOKA-MRCHOC-250", 3, 48);
+    const items = await repos.cart.getItems("56");
     assert.equal(items.length, 1);
-    assert.equal(items[0].qty, 3);
+    assert.equal(Number(items[0].qty), 3);
   });
 
-  it("removeItem removes by SKU", () => {
-    repos.cart.addItem("55", "CDA-MOKA-MRCHOC-250", 1, 48);
-    repos.cart.removeItem("55", "CDA-MOKA-MRCHOC-250");
-    assert.equal(repos.cart.getItems("55").length, 0);
+  it("removeItem removes by SKU", async () => {
+    await repos.cart.addItem("57", "CDA-MOKA-MRCHOC-250", 1, 48);
+    await repos.cart.removeItem("57", "CDA-MOKA-MRCHOC-250");
+    assert.equal((await repos.cart.getItems("57")).length, 0);
   });
 
-  it("clear removes all items", () => {
-    repos.cart.addItem("55", "CDA-MOKA-MRCHOC-250", 1, 48);
-    repos.cart.addItem("55", "CDA-LUCCA-HONEY-250", 1, 79);
-    repos.cart.clear("55");
-    assert.equal(repos.cart.getItems("55").length, 0);
+  it("clear removes all items", async () => {
+    await repos.cart.addItem("58", "CDA-MOKA-MRCHOC-250", 1, 48);
+    await repos.cart.addItem("58", "CDA-LUCCA-HONEY-250", 1, 79);
+    await repos.cart.clear("58");
+    assert.equal((await repos.cart.getItems("58")).length, 0);
   });
 
-  it("getSummary calculates correctly", () => {
-    repos.cart.addItem("55", "CDA-MOKA-MRCHOC-250", 2, 48);
-    repos.cart.addItem("55", "CDA-LUCCA-HONEY-250", 1, 79);
-    const s = repos.cart.getSummary("55");
-    assert.equal(s.count, 3); // count = sum of qty (2+1), not distinct items
-    assert.equal(s.subtotal, 2 * 48 + 79);
+  it("getSummary calculates correctly", async () => {
+    await repos.cart.addItem("59", "CDA-MOKA-MRCHOC-250", 2, 48);
+    await repos.cart.addItem("59", "CDA-LUCCA-HONEY-250", 1, 79);
+    const s = await repos.cart.getSummary("59");
+    assert.equal(s.count, 3);
+    assert.ok(Math.abs(s.subtotal - (2 * 48 + 79)) < 0.01);
   });
 
-  it("getSummary empty cart", () => {
-    const s = repos.cart.getSummary("55");
+  it("getSummary empty cart", async () => {
+    const s = await repos.cart.getSummary("99999");
     assert.equal(s.count, 0);
     assert.equal(s.subtotal, 0);
   });
 
-  it("getItems includes product_name via JOIN", () => {
-    repos.cart.addItem("55", "CDA-MOKA-MRCHOC-250", 1, 48);
-    const items = repos.cart.getItems("55");
+  it("getItems includes product_name via JOIN", async () => {
+    await repos.cart.addItem("60", "CDA-MOKA-MRCHOC-250", 1, 48);
+    const items = await repos.cart.getItems("60");
     assert.equal(items[0].product_name, "Mr. Chocolate");
   });
 });

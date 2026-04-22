@@ -1,45 +1,45 @@
 /**
  * @fileoverview Gateway Consumer — entry point for all WhatsApp messages.
  *
- * Reads from: gateway.incoming (msg.flow incoming)
+ * Reads from:  gateway.incoming (msg.flow incoming)
  * Publishes to: msg.flow validated  (normal messages)
  *               msg.flow outgoing   (command responses, denials)
  */
 
-import fs from "fs";
 import { connect, publish, consume, ack, nack } from "../shared/lib/rabbitmq.mjs";
 import { createEnvelope, setStage, parseFromRabbitMQ, setResponse } from "../shared/lib/envelope.mjs";
-import { getConfig } from "../shared/lib/config.mjs";
-import { getDB } from "../shared/db/connection.mjs";
+import { loadConfig, getConfig } from "../shared/lib/config.mjs";
+import { getDB, initDB } from "../shared/db/connection.mjs";
 import { createCustomerRepo } from "../shared/db/customers.mjs";
 import { createOrderRepo } from "../shared/db/orders.mjs";
 import { createCartRepo } from "../shared/db/cart.mjs";
 import { createReferralRepo } from "../shared/db/referrals.mjs";
+import { createAllowlistRepo } from "../shared/db/allowlist.mjs";
 import { createCommandHandlers } from "../shared/commands/index.mjs";
-import { generatePixCode } from "../shared/lib/pix.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const QUEUE = "gateway.incoming";
 const REFERRAL_CODE_PREFIX = process.env.REFERRAL_CODE_PREFIX || "REF-";
 const _escapedPrefix = REFERRAL_CODE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const CODE_PATTERN = new RegExp(`\\b${_escapedPrefix}[A-HJ-NP-Z2-9]{4}\\b`, "i");
-// In-memory state
+
 const rateLimits = new Map();
-let _allowlist = null;
+
+// Allowlist in-memory cache
+let _allowlistCache = null;
 let _allowlistLoadedAt = 0;
 const ALLOWLIST_TTL = 60 * 1000;
 
-// Repos (initialized once)
 let repos = null;
-
 function getRepos() {
   if (repos) return repos;
-  const db = getDB(process.env.DATA_DIR);
+  const sql = getDB();
   repos = {
-    customers: createCustomerRepo(db),
-    orders: createOrderRepo(db),
-    cart: createCartRepo(db),
-    referrals: createReferralRepo(db),
+    customers: createCustomerRepo(sql),
+    orders:    createOrderRepo(sql),
+    cart:      createCartRepo(sql),
+    referrals: createReferralRepo(sql),
+    allowlist: createAllowlistRepo(sql),
   };
   return repos;
 }
@@ -71,29 +71,21 @@ function checkRateLimit(phone, limit = 8) {
   return "ok";
 }
 
-function loadAllowlist(config) {
+/** Load (or return cached) allowlist from DB. */
+async function getAllowlist(allowlistRepo) {
   const now = Date.now();
-  if (_allowlist && now - _allowlistLoadedAt < ALLOWLIST_TTL) return _allowlist;
+  if (_allowlistCache && now - _allowlistLoadedAt < ALLOWLIST_TTL) return _allowlistCache;
 
-  const file = config._paths?.allowlist;
-  if (!file || !fs.existsSync(file)) {
-    _allowlist = { exact: new Set(), prefixes: [] };
-    _allowlistLoadedAt = now;
-    return _allowlist;
-  }
-
-  const raw = fs.readFileSync(file, "utf-8");
+  const rows = await allowlistRepo.getPatterns();
   const exact = new Set();
   const prefixes = [];
-  for (const line of raw.split("\n")) {
-    const entry = line.split("#")[0].trim();
-    if (!entry) continue;
-    if (entry.endsWith("*")) prefixes.push(entry.slice(0, -1));
-    else exact.add(entry);
+  for (const { pattern } of rows) {
+    if (pattern.endsWith("*")) prefixes.push(pattern.slice(0, -1));
+    else exact.add(pattern);
   }
-  _allowlist = { exact, prefixes };
+  _allowlistCache = { exact, prefixes };
   _allowlistLoadedAt = now;
-  return _allowlist;
+  return _allowlistCache;
 }
 
 function isAllowlisted(phone, allowlist) {
@@ -103,8 +95,14 @@ function isAllowlisted(phone, allowlist) {
 
 async function main() {
   console.log("🟢 Gateway consumer starting...");
+  await initDB();
+  const sql = getDB();
+  await loadConfig(sql);
   const { connection, channel } = await connect(RABBITMQ_URI);
-  const config = getConfig();
+
+  // Seed allowlist from file if DB is empty (first run)
+  const r = getRepos();
+  await r.allowlist.seedFromFile();
 
   consume(channel, QUEUE, async (msg) => {
     if (!msg) return;
@@ -114,55 +112,55 @@ async function main() {
       if (!parsed) { ack(channel, msg); return; }
 
       const { phone, text, pushName } = parsed;
+      const config = getConfig();
       const rateLimit = config.behavior?.rate_limit_per_min || 8;
-
-      // Rate limiting
       const rateStatus = checkRateLimit(phone, rateLimit);
       if (rateStatus === "abuse" || rateStatus === "limited") { ack(channel, msg); return; }
 
-      const r = getRepos();
-      const allowlist = loadAllowlist(config);
+      const allowlist = await getAllowlist(r.allowlist);
       const allowed = isAllowlisted(phone, allowlist);
 
       if (!allowed) {
-        const customer = r.customers.getByPhone(phone);
+        const customer = await r.customers.getByPhone(phone);
         if (!customer || customer.access_status === "blocked") {
           const codeMatch = text.match(CODE_PATTERN);
           if (codeMatch) {
             const code = codeMatch[0].toUpperCase();
-            const referral = r.referrals.validate(code);
+            const referral = await r.referrals.validate(code);
             if (referral) {
-              r.customers.upsert(phone, { push_name: pushName, access_status: "invited", referred_by_phone: referral.referrer_phone });
-              const referrerName = r.customers.getByPhone(referral.referrer_phone)?.name || "um amigo";
+              await r.customers.upsert(phone, { push_name: pushName, access_status: "invited", referred_by_phone: referral.referrer_phone });
+              const referrer = await r.customers.getByPhone(referral.referrer_phone);
+              const referrerName = referrer?.name || referrer?.push_name || "um amigo";
               const envelope = createEnvelope({ phone, text, pushName });
-              setResponse(envelope, `Bem-vindo ao ${config.display_name}! Você foi indicado por ${referrerName}. Me conta, o que procura em café? ☕`);
+              setResponse(envelope, `Bem-vindo ao ${config.display_name || "nosso serviço"}! Você foi indicado por ${referrerName}. Me conta, o que procura? ☕`);
               setStage(envelope, "outgoing");
               publish(channel, "msg.flow", "outgoing", envelope);
               ack(channel, msg);
               return;
             }
           }
-          // Unknown number with no valid referral code — silent discard.
           console.log(`[gateway] Denied ${phone} (not in allowlist, no valid code)`);
           ack(channel, msg);
           return;
         }
       } else {
-        r.customers.upsert(phone, { push_name: pushName, access_status: "active" });
+        await r.customers.upsert(phone, { push_name: pushName, access_status: "active" });
       }
 
       // Static commands
       const pixConfig = config.pix?.enabled
-        ? { key: process.env.PIX_KEY, name: process.env.PIX_NAME || config.display_name, city: process.env.PIX_CITY || "Curitiba" }
+        ? { key: process.env.PIX_KEY, name: process.env.PIX_NAME || config.display_name, city: process.env.PIX_CITY || "São Paulo" }
         : null;
+
       const commands = createCommandHandlers(r, pixConfig, {
-        botPhone: process.env.BOT_PHONE || config.bot_phone || "",
+        botPhone:        process.env.BOT_PHONE || config.bot_phone || "",
         availableModels: config.available_models || [],
-        defaultModelId: config.llm?.model || "",
-        displayName: config.display_name || "",
-        orderPrefix: process.env.ORDER_PREFIX || "",
+        defaultModelId:  config.llm?.model || "",
+        displayName:     config.display_name || "",
+        orderPrefix:     process.env.ORDER_PREFIX || "",
       });
-      const cmdResult = commands.tryHandle(text, phone);
+
+      const cmdResult = await commands.tryHandle(text, phone);
       if (cmdResult) {
         const envelope = createEnvelope({ phone, text, pushName });
         envelope.metadata.command_result = cmdResult;
@@ -170,7 +168,7 @@ async function main() {
         setStage(envelope, "outgoing");
         publish(channel, "msg.flow", "outgoing", envelope);
         if (cmdResult.resetSession) {
-          publish(channel, "events", "session_reset", { tenant_id: config.tenant_id, phone });
+          publish(channel, "events", "session_reset", { phone });
         }
         ack(channel, msg);
         return;

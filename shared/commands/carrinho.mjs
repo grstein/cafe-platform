@@ -1,18 +1,9 @@
 /**
- * @fileoverview /carrinho command handler.
- *
- * Shows current cart contents without going through the LLM.
+ * @fileoverview /carrinho command handler — async.
  */
 
-/**
- * Handle the /carrinho command.
- *
- * @param {string} phone
- * @param {{ cart: ReturnType<typeof import('../db/cart.mjs').createCartRepo> }} repos
- * @returns {{ command: string, text: string }}
- */
-export function handleCarrinho(phone, repos) {
-  const { items, subtotal, count } = repos.cart.getSummary(phone);
+export async function handleCarrinho(phone, repos) {
+  const { items, subtotal, count } = await repos.cart.getSummary(phone);
 
   if (count === 0) {
     return {
@@ -22,7 +13,7 @@ export function handleCarrinho(phone, repos) {
   }
 
   const desc = items.map(i =>
-    `${i.qty}x ${i.product_name || i.product_sku} — R$ ${(i.qty * i.unit_price).toFixed(2)}`
+    `${i.qty}x ${i.product_name || i.product_sku} — R$ ${(Number(i.qty) * Number(i.unit_price)).toFixed(2)}`
   ).join("\n");
 
   const text = [

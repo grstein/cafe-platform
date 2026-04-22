@@ -1,14 +1,14 @@
 /**
  * @fileoverview Enricher Consumer — context enrichment before agent processing.
  *
- * Reads from: enricher.ready (msg.flow ready)
+ * Reads from:   enricher.ready (msg.flow ready)
  * Publishes to: msg.flow enriched
  */
 
 import { connect, publish, consume, ack, nack } from "../shared/lib/rabbitmq.mjs";
 import { parseFromRabbitMQ, setStage, enrichContext } from "../shared/lib/envelope.mjs";
-import { getConfig } from "../shared/lib/config.mjs";
-import { getDB } from "../shared/db/connection.mjs";
+import { loadConfig, getConfig } from "../shared/lib/config.mjs";
+import { getDB, initDB } from "../shared/db/connection.mjs";
 import { createCustomerRepo } from "../shared/db/customers.mjs";
 import { createOrderRepo } from "../shared/db/orders.mjs";
 import { createCartRepo } from "../shared/db/cart.mjs";
@@ -18,18 +18,16 @@ import { createReferralRepo } from "../shared/db/referrals.mjs";
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const QUEUE = "enricher.ready";
 
-// Repos initialized once
 let repos = null;
-
 function getRepos() {
   if (repos) return repos;
-  const db = getDB(process.env.DATA_DIR);
+  const sql = getDB();
   repos = {
-    customers: createCustomerRepo(db),
-    orders: createOrderRepo(db),
-    cart: createCartRepo(db),
-    conversations: createConversationRepo(db),
-    referrals: createReferralRepo(db),
+    customers:     createCustomerRepo(sql),
+    orders:        createOrderRepo(sql),
+    cart:          createCartRepo(sql),
+    conversations: createConversationRepo(sql),
+    referrals:     createReferralRepo(sql),
   };
   return repos;
 }
@@ -41,7 +39,7 @@ function buildContextBlock(customer, cart, orders, history, config, envelope) {
     lines.push(`Nome: ${customer.name || customer.push_name || "não informado"}`);
     if (customer.cep) lines.push(`CEP: ${customer.cep}`);
     if (customer.city) lines.push(`Cidade: ${customer.city}/${customer.state || ""}`);
-    if (customer.total_orders > 0) lines.push(`Pedidos anteriores: ${customer.total_orders} (total: R$ ${(customer.total_spent || 0).toFixed(2)})`);
+    if (Number(customer.total_orders) > 0) lines.push(`Pedidos anteriores: ${customer.total_orders} (total: R$ ${Number(customer.total_spent || 0).toFixed(2)})`);
     if (customer.nps_score != null) lines.push(`NPS: ${customer.nps_score}/10`);
     if (customer.tags) {
       try {
@@ -55,7 +53,7 @@ function buildContextBlock(customer, cart, orders, history, config, envelope) {
   if (cart && cart.count > 0) {
     lines.push("", "[CARRINHO ATUAL]");
     for (const item of cart.items) {
-      lines.push(`- ${item.qty}x ${item.product_name || item.product_sku} (R$ ${(item.qty * item.unit_price).toFixed(2)})`);
+      lines.push(`- ${item.qty}x ${item.product_name || item.product_sku} (R$ ${(Number(item.qty) * Number(item.unit_price)).toFixed(2)})`);
     }
     lines.push(`Subtotal: R$ ${cart.subtotal.toFixed(2)}`);
   }
@@ -65,7 +63,7 @@ function buildContextBlock(customer, cart, orders, history, config, envelope) {
     for (const o of orders) {
       const items = typeof o.items === "string" ? JSON.parse(o.items) : o.items;
       const desc = items.map(i => `${i.qty}x ${i.name}`).join(", ");
-      lines.push(`- #${process.env.ORDER_PREFIX || ""}${o.id} (${o.status}) ${desc} — R$ ${o.total.toFixed(2)} (${o.created_at})`);
+      lines.push(`- #${process.env.ORDER_PREFIX || ""}${o.id} (${o.status}) ${desc} — R$ ${Number(o.total).toFixed(2)} (${String(o.created_at).slice(0, 10)})`);
     }
   }
 
@@ -80,7 +78,7 @@ function buildContextBlock(customer, cart, orders, history, config, envelope) {
   if (envelope.payload.is_batch) {
     lines.push("", `[MENSAGENS EM SEQUÊNCIA — ${envelope.payload.batch_count} mensagens]`);
     for (const m of envelope.payload.messages) {
-      lines.push(`${m.ts?.substring(11, 19) || ""} — "${m.text}"`);
+      lines.push(`${String(m.ts || "").substring(11, 19)} — "${m.text}"`);
     }
     lines.push("(Trate como uma única solicitação)");
   }
@@ -90,8 +88,10 @@ function buildContextBlock(customer, cart, orders, history, config, envelope) {
 
 async function main() {
   console.log("🟢 Enricher consumer starting...");
+  await initDB();
+  const sql = getDB();
+  await loadConfig(sql);
   const { connection, channel } = await connect(RABBITMQ_URI);
-  const config = getConfig();
 
   consume(channel, QUEUE, async (msg) => {
     if (!msg) return;
@@ -101,27 +101,21 @@ async function main() {
       console.log(`[enricher] Processing ${phone} text="${envelope.payload?.merged_text?.substring(0, 50)}"`);
 
       const r = getRepos();
-
-      // Get/upsert customer
       const pushName = envelope.payload.messages[0]?.pushName;
-      r.customers.upsert(phone, { push_name: pushName });
-      const customer = r.customers.getByPhone(phone);
+      await r.customers.upsert(phone, { push_name: pushName });
+      const customer = await r.customers.getByPhone(phone);
 
-      // Load context
       const ttl = config.session?.ttl_minutes || 30;
-      const history = r.conversations.getRecent(phone, ttl);
-      const cart = r.cart.getSummary(phone);
-      const orders = r.orders.getRecent ? r.orders.getRecent(phone, 3) : [];
+      const history = await r.conversations.getRecent(phone, ttl);
+      const cart = await r.cart.getSummary(phone);
+      const orders = await r.orders.getRecent(phone, 3);
 
-      // Session limits
-      const msgCount = r.conversations.getCount(phone, ttl);
+      const msgCount = await r.conversations.getCount(phone, ttl);
       const softLimit = config.session?.soft_limit || 40;
       const hardLimit = config.session?.hard_limit || 60;
 
-      // Build context block
       const contextBlock = buildContextBlock(customer, cart, orders, history, config, envelope);
 
-      // Enrich envelope
       enrichContext(envelope, "customer", customer);
       enrichContext(envelope, "cart", cart);
       enrichContext(envelope, "last_orders", orders);

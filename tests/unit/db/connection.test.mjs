@@ -1,63 +1,37 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { getDB, closeDB, closeAll } from "../../../shared/db/connection.mjs";
-import { migrations } from "../../../shared/db/migrations.mjs";
-import { getTenantId } from "../../../shared/lib/config.mjs";
+import { createTestDB } from "../../helpers/db.mjs";
+import { runMigrations, migrations } from "../../../shared/db/migrations.mjs";
 
-describe("connection manager", () => {
-  let tmpDir;
-  let origDataDir;
+describe("connection manager (PostgreSQL)", () => {
+  let sql;
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "conn-test-"));
-    origDataDir = process.env.DATA_DIR;
-    process.env.DATA_DIR = tmpDir;
+  before(async () => {
+    sql = await createTestDB();
   });
 
-  afterEach(() => {
-    closeAll();
-    if (origDataDir === undefined) delete process.env.DATA_DIR;
-    else process.env.DATA_DIR = origDataDir;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  after(async () => { await sql.end(); });
+
+  it("createTestDB connects and runs migrations", async () => {
+    const [row] = await sql`SELECT COALESCE(MAX(version), 0) AS v FROM schema_version`;
+    assert.equal(Number(row.v), migrations[migrations.length - 1].version);
   });
 
-  it("getDB creates .db file for the single tenant", () => {
-    getDB(tmpDir);
-    assert.ok(fs.existsSync(path.join(tmpDir, `${getTenantId()}.db`)));
+  it("migrations are idempotent — running again does not fail", async () => {
+    // Should not throw even if all migrations are already applied
+    await runMigrations(sql);
+    const [row] = await sql`SELECT COUNT(*)::int AS c FROM schema_version`;
+    assert.ok(row.c >= migrations.length);
   });
 
-  it("getDB returns cached instance", () => {
-    const a = getDB(tmpDir);
-    const b = getDB(tmpDir);
-    assert.equal(a, b);
-  });
-
-  it("getDB runs all migrations", () => {
-    const db = getDB(tmpDir);
-    const row = db.prepare("SELECT MAX(version) AS v FROM schema_version").get();
-    assert.equal(row.v, migrations[migrations.length - 1].version);
-  });
-
-  it("closeDB removes cached instance", () => {
-    const a = getDB(tmpDir);
-    closeDB();
-    const b = getDB(tmpDir);
-    assert.notEqual(a, b);
-  });
-
-  it("closeAll clears connection", () => {
-    const a = getDB(tmpDir);
-    closeAll();
-    const b = getDB(tmpDir);
-    assert.notEqual(a, b);
-  });
-
-  it("getDB creates dataDir recursively", () => {
-    const nested = path.join(tmpDir, "a", "b", "c");
-    getDB(nested);
-    assert.ok(fs.existsSync(path.join(nested, `${getTenantId()}.db`)));
+  it("all expected tables exist", async () => {
+    const tables = ["customers", "products", "orders", "cart_items", "conversations", "referrals"];
+    for (const table of tables) {
+      const [row] = await sql`
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = ${table}
+      `;
+      assert.ok(row, `Table "${table}" should exist`);
+    }
   });
 });

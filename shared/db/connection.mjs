@@ -1,78 +1,66 @@
 /**
- * @fileoverview SQLite connection manager — single database per tenant.
+ * @fileoverview PostgreSQL connection manager.
  *
- * Returns a cached connection, auto-migrating on first access.
+ * Returns a cached postgres.js client. Timestamps are returned as ISO
+ * strings (not Date objects) via the value transformer.
+ *
+ * Call initDB() once at consumer startup to run pending migrations.
  */
 
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
-import { migrations } from "./migrations.mjs";
-import { getTenantId } from "../lib/config.mjs";
+import postgres from "postgres";
+import { runMigrations } from "./migrations.mjs";
 
-let _db = null;
+let _sql = null;
 
 /**
- * Get (or create) the SQLite database connection.
+ * Get (or create) the postgres.js client singleton.
  *
- * @param {string} [dataDir] - Directory where the .db file lives. Defaults to DATA_DIR env or "./data".
- * @returns {import('better-sqlite3').Database}
+ * @param {string} [url] - PostgreSQL connection URL. Defaults to DATABASE_URL env.
+ * @returns {import('postgres').Sql}
  */
-export function getDB(dataDir) {
-  if (_db) return _db;
+export function getDB(url) {
+  if (_sql) return _sql;
 
-  const dir = dataDir || process.env.DATA_DIR || "./data";
-  fs.mkdirSync(dir, { recursive: true });
+  const connectionUrl = url || process.env.DATABASE_URL;
+  if (!connectionUrl) {
+    throw new Error("DATABASE_URL environment variable is required");
+  }
 
-  const dbPath = path.join(dir, `${getTenantId()}.db`);
-  const db = new Database(dbPath);
+  _sql = postgres(connectionUrl, {
+    max: 10,
+    idle_timeout: 30,
+    connect_timeout: 10,
+    // Return Date objects as ISO strings so downstream code stays unchanged
+    transform: {
+      value: { from: (v) => (v instanceof Date ? v.toISOString() : v) },
+    },
+  });
 
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+  return _sql;
+}
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_version (
-      version    INTEGER PRIMARY KEY,
-      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-
-  _runMigrations(db);
-
-  _db = db;
-  return _db;
+/**
+ * Run all pending migrations. Call once at consumer startup.
+ *
+ * @param {string} [url]
+ * @returns {Promise<void>}
+ */
+export async function initDB(url) {
+  const sql = getDB(url);
+  await runMigrations(sql);
 }
 
 /**
  * Close the database connection (useful in tests or graceful shutdown).
+ *
+ * @returns {Promise<void>}
  */
-export function closeDB() {
-  if (_db) {
-    _db.close();
-    _db = null;
+export async function closeDB() {
+  if (_sql) {
+    await _sql.end();
+    _sql = null;
   }
 }
 
-/** Alias kept for backward compatibility with tests. */
+/** Alias kept for backward compatibility. */
 export const closeAll = closeDB;
-
-function _runMigrations(db) {
-  const row = db
-    .prepare("SELECT COALESCE(MAX(version), 0) AS current FROM schema_version")
-    .get();
-  const currentVersion = row.current;
-
-  const pending = migrations
-    .filter((m) => m.version > currentVersion)
-    .sort((a, b) => a.version - b.version);
-
-  if (pending.length === 0) return;
-
-  const insertVersion = db.prepare("INSERT INTO schema_version (version) VALUES (?)");
-  for (const migration of pending) {
-    db.transaction(() => {
-      migration.up(db);
-      insertVersion.run(migration.version);
-    })();
-  }
-}

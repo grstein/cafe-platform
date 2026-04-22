@@ -1,32 +1,34 @@
 /**
  * @fileoverview Analytics Consumer — logging and CRM updates.
  *
- * Reads from: analytics.events (events #)
+ * Reads from:   analytics.events (events #)
  * Publishes to: nothing (terminal consumer)
  */
 
 import { connect, consume, ack } from "../shared/lib/rabbitmq.mjs";
 import { parseFromRabbitMQ } from "../shared/lib/envelope.mjs";
 import { createLogger } from "../shared/lib/logger.mjs";
-import { getDB } from "../shared/db/connection.mjs";
+import { getDB, initDB } from "../shared/db/connection.mjs";
+import { loadConfig } from "../shared/lib/config.mjs";
 import { createCustomerRepo } from "../shared/db/customers.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const LOG_DIR = process.env.LOG_DIR || "./logs";
 const QUEUE = "analytics.events";
 
-// Single logger and repo
 const logger = createLogger(LOG_DIR);
 let customerRepo = null;
 
 function getCustomerRepo() {
   if (customerRepo) return customerRepo;
-  customerRepo = createCustomerRepo(getDB(process.env.DATA_DIR));
+  customerRepo = createCustomerRepo(getDB());
   return customerRepo;
 }
 
 async function main() {
   console.log("🟢 Analytics consumer starting...");
+  await initDB();
+  await loadConfig(getDB());
   const { connection, channel } = await connect(RABBITMQ_URI);
 
   consume(channel, QUEUE, async (msg) => {
@@ -57,14 +59,11 @@ async function main() {
             });
           }
 
-          try { getCustomerRepo().upsert(phone, {}); } catch {}
+          try { await getCustomerRepo().upsert(phone, {}); } catch {}
           break;
         }
-
         default:
-          logger.log(stage.toUpperCase(), phone, {
-            correlation_id: envelope.correlation_id,
-          });
+          logger.log(stage.toUpperCase(), phone, { correlation_id: envelope.correlation_id });
       }
 
       ack(channel, msg);

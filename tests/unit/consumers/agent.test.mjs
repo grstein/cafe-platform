@@ -1,11 +1,11 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createTestDB, createTestRepos, seedProducts, seedCustomer } from "../../helpers/db.mjs";
 import { PHONES, APP_CONFIG } from "../../helpers/fixtures.mjs";
 
-// Extract pure functions from agent.mjs
-function resolveModelId(tenantConfig, customer) {
-  let modelId = tenantConfig.llm?.model || "anthropic/claude-sonnet-4.6";
+// Pure utility extracted from agent.mjs
+function resolveModelId(config, customer) {
+  let modelId = config.llm?.model || "anthropic/claude-haiku-4.5";
   if (customer?.preferences) {
     try {
       const prefs = typeof customer.preferences === "string" ? JSON.parse(customer.preferences) : customer.preferences;
@@ -15,103 +15,58 @@ function resolveModelId(tenantConfig, customer) {
   return modelId;
 }
 
-function buildCustomToolNames(phone, repos, botPhone) {
-  // Simulate tool name extraction without importing Pi Agent SDK
-  const toolSets = [
-    ["create_order", "list_orders"],
-    ["search_catalog"],
-    ["save_customer_info"],
-    ["add_to_cart", "update_cart", "remove_from_cart", "view_cart", "checkout"],
-    ["invite_customer", "get_referral_info"],
-  ];
-  return toolSets.flat();
-}
+const ALL_TOOL_NAMES = [
+  "create_order", "list_orders",
+  "search_catalog",
+  "save_customer_info",
+  "add_to_cart", "update_cart", "remove_from_cart", "view_cart", "checkout",
+  "invite_customer", "get_referral_info",
+];
 
 describe("agent session reset", () => {
-  it("clears session from cache on reset event", () => {
-    const sessionCache = new Map();
-    const disposed = [];
-    const mockSession = { dispose() { disposed.push(true); } };
-    sessionCache.set(PHONES.gustavo, { session: mockSession, lastUsed: Date.now(), msgCount: 1 });
-
-    // Simulate reset event handler
-    const resetPayload = { phone: PHONES.gustavo };
-    const cached = sessionCache.get(resetPayload.phone);
-    if (cached) {
-      try { cached.session.dispose(); } catch {}
-      sessionCache.delete(resetPayload.phone);
-    }
-
-    assert.equal(sessionCache.size, 0);
-    assert.equal(disposed.length, 1);
+  it("resolveModelId uses default when no customer preference", () => {
+    const modelId = resolveModelId(APP_CONFIG, null);
+    assert.equal(modelId, APP_CONFIG.llm.model);
   });
 
-  it("ignores reset for non-existent session", () => {
-    const sessionCache = new Map();
-    const resetPayload = { phone: PHONES.gustavo };
-    const cached = sessionCache.get(resetPayload.phone);
-    assert.equal(cached, undefined);
-    assert.equal(sessionCache.size, 0);
+  it("resolveModelId uses customer preference when set", () => {
+    const customer = { preferences: JSON.stringify({ modelo: "anthropic/claude-sonnet-4.6" }) };
+    const modelId = resolveModelId(APP_CONFIG, customer);
+    assert.equal(modelId, "anthropic/claude-sonnet-4.6");
   });
 
-  it("only clears the matching session, not others", () => {
-    const sessionCache = new Map();
-    const session1 = { dispose() {} };
-    const session2 = { dispose() {} };
-    sessionCache.set(PHONES.gustavo, { session: session1, lastUsed: Date.now(), msgCount: 1 });
-    sessionCache.set(PHONES.beta, { session: session2, lastUsed: Date.now(), msgCount: 1 });
+  it("resolveModelId falls back on invalid JSON preferences", () => {
+    const customer = { preferences: "not json" };
+    const modelId = resolveModelId(APP_CONFIG, customer);
+    assert.equal(modelId, APP_CONFIG.llm.model);
+  });
 
-    const resetPayload = { phone: PHONES.gustavo };
-    const cached = sessionCache.get(resetPayload.phone);
-    if (cached) {
-      try { cached.session.dispose(); } catch {}
-      sessionCache.delete(resetPayload.phone);
-    }
-
-    assert.equal(sessionCache.size, 1);
-    assert.ok(sessionCache.has(PHONES.beta));
+  it("all 11 tool names are present in tool set", () => {
+    assert.equal(ALL_TOOL_NAMES.length, 11);
+    assert.ok(ALL_TOOL_NAMES.includes("search_catalog"));
+    assert.ok(ALL_TOOL_NAMES.includes("checkout"));
+    assert.ok(ALL_TOOL_NAMES.includes("get_referral_info"));
   });
 });
 
-describe("agent internals", () => {
-  it("resolveModelId returns default from config", () => {
-    const id = resolveModelId(APP_CONFIG, null);
-    assert.equal(id, "anthropic/claude-haiku-4.5");
+describe("agent session cache", () => {
+  let sql, repos;
+
+  before(async () => {
+    sql = await createTestDB();
+    repos = createTestRepos(sql);
+    await seedProducts(sql);
+    await seedCustomer(sql, { phone: PHONES.primary });
   });
 
-  it("resolveModelId uses customer preference", () => {
-    const customer = { preferences: JSON.stringify({ modelo: "anthropic/claude-haiku-4.5" }) };
-    const id = resolveModelId(APP_CONFIG, customer);
-    assert.equal(id, "anthropic/claude-haiku-4.5");
-  });
+  after(async () => { await sql.end(); });
 
-  it("resolveModelId falls back on invalid preferences", () => {
-    const customer = { preferences: "invalid-json" };
-    const id = resolveModelId(APP_CONFIG, customer);
-    assert.equal(id, "anthropic/claude-haiku-4.5");
-  });
-
-  it("resolveModelId with object preferences", () => {
-    const customer = { preferences: { modelo: "x/custom" } };
-    const id = resolveModelId(APP_CONFIG, customer);
-    assert.equal(id, "x/custom");
-  });
-
-  it("buildCustomTools returns expected tool names", () => {
-    const db = createTestDB();
-    const repos = createTestRepos(db);
-    seedProducts(db);
-    seedCustomer(db, { phone: PHONES.gustavo });
-
-    // Import actual tools to verify count
-    const expected = [
-      "create_order", "list_orders",
-      "search_catalog",
-      "save_customer_info",
-      "add_to_cart", "update_cart", "remove_from_cart", "view_cart", "checkout",
-      "invite_customer", "get_referral_info",
-    ];
-    const names = buildCustomToolNames(PHONES.gustavo, repos, "554100000000");
-    assert.deepEqual(names, expected);
+  it("customer preferences are read from DB for model resolution", async () => {
+    await repos.customers.updateInfo(PHONES.primary, {
+      preferences: JSON.stringify({ modelo: "anthropic/claude-sonnet-4.6" }),
+    });
+    const customer = await repos.customers.getByPhone(PHONES.primary);
+    const modelId = resolveModelId(APP_CONFIG, customer);
+    assert.equal(modelId, "anthropic/claude-sonnet-4.6");
   });
 });

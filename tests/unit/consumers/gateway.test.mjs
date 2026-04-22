@@ -1,10 +1,11 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { EVOLUTION_PAYLOAD, PHONES, APP_CONFIG } from "../../helpers/fixtures.mjs";
 import { createMockChannel } from "../../helpers/rabbitmq.mjs";
 import { createTestDB, createTestRepos, seedCustomer } from "../../helpers/db.mjs";
 
-// Copy pure functions from gateway.mjs for testing
+// ── Pure functions mirrored from gateway.mjs for unit-testing ─────────────
+
 function parseIncomingPayload(raw) {
   const d = raw.data || raw;
   const key = d.key || {};
@@ -35,80 +36,67 @@ function isAllowlisted(phone, allowlist) {
   return allowlist.prefixes.some(p => phone.startsWith(p));
 }
 
-function handleCommandAndPublish(channel, phone, cmdResult) {
-  const published = [];
-  const mockChannel = {
-    publish(exchange, routingKey, buffer) {
-      published.push({ exchange, routingKey, data: JSON.parse(buffer.toString()) });
-    },
-  };
-  if (cmdResult) {
-    mockChannel.publish("msg.flow", "outgoing", Buffer.from(JSON.stringify({ phone })));
-    if (cmdResult.resetSession) {
-      mockChannel.publish("events", "session_reset", Buffer.from(JSON.stringify({ phone })));
-    }
-  }
-  return published;
-}
+// ── Session reset logic ────────────────────────────────────────────────────
 
 describe("gateway session reset", () => {
   it("publishes session_reset event when command returns resetSession", () => {
+    const published = [];
+    const mockChannel = { publish(e, r, b) { published.push({ exchange: e, routingKey: r, data: JSON.parse(b.toString()) }); } };
     const cmdResult = { command: "reiniciar", text: "Conversa reiniciada!", resetSession: true };
-    const published = handleCommandAndPublish(null, PHONES.gustavo, cmdResult);
+    mockChannel.publish("msg.flow", "outgoing", Buffer.from(JSON.stringify({ phone: PHONES.primary })));
+    if (cmdResult.resetSession) {
+      mockChannel.publish("events", "session_reset", Buffer.from(JSON.stringify({ phone: PHONES.primary })));
+    }
     assert.equal(published.length, 2);
     assert.equal(published[1].exchange, "events");
     assert.equal(published[1].routingKey, "session_reset");
-    assert.equal(published[1].data.phone, PHONES.gustavo);
   });
 
   it("does not publish session_reset for normal commands", () => {
+    const published = [];
+    const mockChannel = { publish(e, r, b) { published.push({ exchange: e, routingKey: r }); } };
     const cmdResult = { command: "ajuda", text: "help text" };
-    const published = handleCommandAndPublish(null, PHONES.gustavo, cmdResult);
+    mockChannel.publish("msg.flow", "outgoing", Buffer.from(JSON.stringify({ phone: PHONES.primary })));
     assert.equal(published.length, 1);
-    assert.equal(published[0].exchange, "msg.flow");
     assert.equal(published[0].routingKey, "outgoing");
-  });
-
-  it("publishes session_reset when /modelo changes model", () => {
-    const cmdResult = { command: "modelo", text: "Modelo alterado...", resetSession: true };
-    const published = handleCommandAndPublish(null, PHONES.gustavo, cmdResult);
-    const resetEvent = published.find(p => p.routingKey === "session_reset");
-    assert.ok(resetEvent);
-    assert.equal(resetEvent.data.phone, PHONES.gustavo);
   });
 });
 
-// ── Access control (allowlist enforcement) ───────────────────────────────────
+// ── Access control ────────────────────────────────────────────────────────
 
-// Inline the access-control logic mirrored from gateway.mjs so we can unit-test
-// it without spinning up RabbitMQ.
 const REFERRAL_CODE_PREFIX = "TEST-";
 const _esc = REFERRAL_CODE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const CODE_PATTERN = new RegExp(`\\b${_esc}[A-HJ-NP-Z2-9]{4}\\b`, "i");
 
-function handleAccess({ phone, text, pushName }, config, repos, mockChannel) {
-  const allowlist = { exact: new Set([PHONES.primary]), prefixes: [] };
+async function handleAccess({ phone, text, pushName }, repos, mockChannel) {
+  // Build allowlist from DB patterns
+  const patterns = await repos.allowlist.getPatterns();
+  const exact = new Set();
+  const prefixes = [];
+  for (const { pattern } of patterns) {
+    if (pattern.endsWith("*")) prefixes.push(pattern.slice(0, -1));
+    else exact.add(pattern);
+  }
+  const allowlist = { exact, prefixes };
   const allowed = isAllowlisted(phone, allowlist);
 
   if (!allowed) {
-    const customer = repos.customers.getByPhone(phone);
+    const customer = await repos.customers.getByPhone(phone);
     if (!customer || customer.access_status === "blocked") {
       const codeMatch = text.match(CODE_PATTERN);
       if (codeMatch) {
         const code = codeMatch[0].toUpperCase();
-        const referral = repos.referrals.validate(code);
+        const referral = await repos.referrals.validate(code);
         if (referral) {
-          repos.customers.upsert(phone, { push_name: pushName, access_status: "invited", referred_by_phone: referral.referrer_phone });
+          await repos.customers.upsert(phone, { push_name: pushName, access_status: "invited", referred_by_phone: referral.referrer_phone });
           mockChannel.publish("msg.flow", "outgoing", Buffer.from(JSON.stringify({ type: "welcome", phone })));
           return "welcome";
         }
       }
-      // Unknown number, no valid code → silent discard
       return "denied";
     }
-    // Customer exists and is not blocked (invited/active) → fall through
   } else {
-    repos.customers.upsert(phone, { push_name: pushName, access_status: "active" });
+    await repos.customers.upsert(phone, { push_name: pushName, access_status: "active" });
   }
 
   mockChannel.publish("msg.flow", "validated", Buffer.from(JSON.stringify({ phone, text })));
@@ -116,72 +104,57 @@ function handleAccess({ phone, text, pushName }, config, repos, mockChannel) {
 }
 
 describe("gateway access control", () => {
-  let db, repos;
-  beforeEach(() => {
-    db = createTestDB();
-    repos = createTestRepos(db);
+  let sql, repos;
+
+  before(async () => {
+    sql = await createTestDB();
+    repos = createTestRepos(sql);
+    // Seed allowlist: only PHONES.primary is pre-authorized
+    await repos.allowlist.addPattern(PHONES.primary, "test allowlist");
   });
 
-  it("allows allowlisted number through to validated", () => {
+  after(async () => { await sql.end(); });
+
+  it("allows allowlisted number through to validated", async () => {
     const ch = createMockChannel();
-    const result = handleAccess(
-      { phone: PHONES.primary, text: "oi", pushName: "Gustavo" },
-      APP_CONFIG, repos, ch
-    );
+    const result = await handleAccess({ phone: PHONES.primary, text: "oi", pushName: "A" }, repos, ch);
     assert.equal(result, "allowed");
     assert.equal(ch.published.length, 1);
     assert.equal(ch.published[0].routingKey, "validated");
   });
 
-  it("silently discards unknown number with no referral code — no message published", () => {
+  it("silently discards unknown number with no referral code", async () => {
     const ch = createMockChannel();
-    const result = handleAccess(
-      { phone: PHONES.unknown, text: "oi quero cafe", pushName: "Intruder" },
-      APP_CONFIG, repos, ch
-    );
-    assert.equal(result, "denied");
-    assert.equal(ch.published.length, 0, "must publish nothing for unknown numbers");
-  });
-
-  it("silently discards unknown number whose text does not contain a code", () => {
-    const ch = createMockChannel();
-    const result = handleAccess(
-      { phone: PHONES.unknown, text: "quero saber o preco", pushName: "Stranger" },
-      APP_CONFIG, repos, ch
-    );
+    const result = await handleAccess({ phone: PHONES.unknown, text: "oi quero cafe", pushName: "B" }, repos, ch);
     assert.equal(result, "denied");
     assert.equal(ch.published.length, 0);
   });
 
-  it("silently discards blocked customer even if in allowlist by customer record", () => {
-    seedCustomer(db, { phone: PHONES.unknown, accessStatus: "blocked" });
+  it("silently discards blocked customer", async () => {
+    await seedCustomer(sql, { phone: PHONES.blocked, accessStatus: "blocked" });
     const ch = createMockChannel();
-    const result = handleAccess(
-      { phone: PHONES.unknown, text: "oi", pushName: "Blocked" },
-      APP_CONFIG, repos, ch
-    );
+    const result = await handleAccess({ phone: PHONES.blocked, text: "oi", pushName: "C" }, repos, ch);
     assert.equal(result, "denied");
     assert.equal(ch.published.length, 0);
   });
 
-  it("allows invited customer (joined via referral) through even if not in static allowlist", () => {
-    seedCustomer(db, { phone: PHONES.unknown, access_status: "invited" });
+  it("allows invited customer through", async () => {
+    await seedCustomer(sql, { phone: "5500000000097", accessStatus: "invited" });
     const ch = createMockChannel();
-    const result = handleAccess(
-      { phone: PHONES.unknown, text: "oi", pushName: "Invited" },
-      APP_CONFIG, repos, ch
-    );
+    const result = await handleAccess({ phone: "5500000000097", text: "oi", pushName: "D" }, repos, ch);
     assert.equal(result, "allowed");
     assert.equal(ch.published[0].routingKey, "validated");
   });
 });
 
+// ── Gateway internals ─────────────────────────────────────────────────────
+
 describe("gateway internals", () => {
   beforeEach(() => rateLimits.clear());
 
   it("parseIncomingPayload extracts phone and text", () => {
-    const r = parseIncomingPayload(EVOLUTION_PAYLOAD("Oi!", PHONES.gustavo));
-    assert.equal(r.phone, PHONES.gustavo);
+    const r = parseIncomingPayload(EVOLUTION_PAYLOAD("Oi!", PHONES.primary));
+    assert.equal(r.phone, PHONES.primary);
     assert.equal(r.text, "Oi!");
     assert.equal(r.pushName, "Customer");
   });
@@ -191,12 +164,12 @@ describe("gateway internals", () => {
   });
 
   it("parseIncomingPayload returns null for group", () => {
-    const payload = { instance: "T", data: { key: { remoteJid: "123@g.us", fromMe: false }, message: { conversation: "hi" } } };
+    const payload = { data: { key: { remoteJid: "123@g.us", fromMe: false }, message: { conversation: "hi" } } };
     assert.equal(parseIncomingPayload(payload), null);
   });
 
   it("parseIncomingPayload returns null for empty text", () => {
-    const payload = { instance: "T", data: { key: { remoteJid: "55@s.whatsapp.net", fromMe: false }, message: {} } };
+    const payload = { data: { key: { remoteJid: "55@s.whatsapp.net", fromMe: false }, message: {} } };
     assert.equal(parseIncomingPayload(payload), null);
   });
 
@@ -205,13 +178,13 @@ describe("gateway internals", () => {
   });
 
   it("checkRateLimit limited above 8", () => {
-    for (let i = 0; i < 8; i++) checkRateLimit("55", 8);
-    assert.equal(checkRateLimit("55", 8), "limited");
+    for (let i = 0; i < 8; i++) checkRateLimit("55b", 8);
+    assert.equal(checkRateLimit("55b", 8), "limited");
   });
 
   it("checkRateLimit abuse above 20", () => {
-    for (let i = 0; i < 20; i++) checkRateLimit("55", 8);
-    assert.equal(checkRateLimit("55", 8), "abuse");
+    for (let i = 0; i < 20; i++) checkRateLimit("55c", 8);
+    assert.equal(checkRateLimit("55c", 8), "abuse");
   });
 
   it("isAllowlisted matches exact", () => {

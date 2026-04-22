@@ -1,9 +1,13 @@
 /**
- * @fileoverview Test helper — in-memory SQLite databases for unit tests.
+ * @fileoverview Test helper — PostgreSQL database for tests.
+ *
+ * createTestDB() connects to the test database, runs migrations,
+ * and truncates all tables so each test file starts clean.
  */
 
-import Database from "better-sqlite3";
-import { migrations } from "../../shared/db/migrations.mjs";
+import postgres from "postgres";
+import { runMigrations } from "../../shared/db/migrations.mjs";
+import { createAllowlistRepo } from "../../shared/db/allowlist.mjs";
 import { createCustomerRepo } from "../../shared/db/customers.mjs";
 import { createProductRepo } from "../../shared/db/products.mjs";
 import { createOrderRepo } from "../../shared/db/orders.mjs";
@@ -12,81 +16,101 @@ import { createReferralRepo } from "../../shared/db/referrals.mjs";
 import { createConversationRepo } from "../../shared/db/conversations.mjs";
 import { PRODUCTS } from "./fixtures.mjs";
 
+const TEST_DB_URL = process.env.DATABASE_URL || "postgresql://cafe_test:test@localhost:5432/cafe_test";
+
 /**
- * Create an in-memory SQLite database with all migrations applied.
- * Each call returns a fresh, isolated database.
+ * Create a postgres.js client for tests.
+ * Runs migrations and truncates data tables.
  *
- * @returns {import('better-sqlite3').Database}
+ * @returns {Promise<import('postgres').Sql>}
  */
-export function createTestDB() {
-  const db = new Database(":memory:");
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+export async function createTestDB() {
+  const sql = postgres(TEST_DB_URL, {
+    max: 5,
+    transform: {
+      value: { from: (v) => (v instanceof Date ? v.toISOString() : v) },
+    },
+  });
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_version (
-      version    INTEGER PRIMARY KEY,
-      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
+  await runMigrations(sql);
 
-  const insertVersion = db.prepare("INSERT INTO schema_version (version) VALUES (?)");
-  for (const migration of migrations) {
-    db.transaction(() => {
-      migration.up(db);
-      insertVersion.run(migration.version);
-    })();
-  }
+  // Clean all data tables + reset config
+  await sql`TRUNCATE TABLE referrals, conversations, cart_items, orders, customers, products, allowlist RESTART IDENTITY CASCADE`;
+  await sql`DELETE FROM app_config`;
+  // Re-seed app_config with test values
+  const testConfig = {
+    display_name: "Test Store",
+    llm:          { provider: "openrouter", model: "anthropic/claude-haiku-4.5", thinking: "medium" },
+    session:      { ttl_minutes: 30, soft_limit: 40, hard_limit: 60, debounce_ms: 2500 },
+    behavior:     { humanize_delay_min_ms: 2000, humanize_delay_max_ms: 6000, rate_limit_per_min: 8, typing_indicator: true },
+    pix:          { enabled: true },
+    bot_phone:    "5500000000000",
+    available_models: [
+      { id: "anthropic/claude-haiku-4.5", name: "Claude Haiku 4.5", emoji: "🐇" },
+      { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6", emoji: "🧠" },
+    ],
+  };
+  await sql`INSERT INTO app_config (id, config) VALUES (1, ${JSON.stringify(testConfig)}::jsonb)`;
 
-  return db;
+  return sql;
 }
 
 /**
  * Create all repository instances for a test database.
  *
- * @param {import('better-sqlite3').Database} db
- * @returns {{ customers, products, orders, cart, referrals, conversations }}
+ * @param {import('postgres').Sql} sql
  */
-export function createTestRepos(db) {
+export function createTestRepos(sql) {
   return {
-    customers: createCustomerRepo(db),
-    products: createProductRepo(db),
-    orders: createOrderRepo(db),
-    cart: createCartRepo(db),
-    referrals: createReferralRepo(db),
-    conversations: createConversationRepo(db),
+    customers:     createCustomerRepo(sql),
+    products:      createProductRepo(sql),
+    orders:        createOrderRepo(sql),
+    cart:          createCartRepo(sql),
+    referrals:     createReferralRepo(sql),
+    conversations: createConversationRepo(sql),
+    allowlist:     createAllowlistRepo(sql),
   };
 }
 
 /**
  * Seed the database with the 3 standard test products.
  *
- * @param {import('better-sqlite3').Database} db
+ * @param {import('postgres').Sql} sql
  */
-export function seedProducts(db) {
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO products (sku, name, roaster, sca_score, profile, origin, process, price, cost, weight, available, stock, highlight, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 100, ?, datetime('now'))
-  `);
-
+export async function seedProducts(sql) {
+  const repo = createProductRepo(sql);
   for (const p of Object.values(PRODUCTS)) {
-    stmt.run(p.sku, p.name, p.roaster, p.sca, p.profile, p.origin, p.process, p.price, p.cost, p.weight, p.highlight);
+    await repo.upsert({
+      sku:       p.sku,
+      name:      p.name,
+      roaster:   p.roaster,
+      sca_score: p.sca,
+      profile:   p.profile,
+      origin:    p.origin,
+      process:   p.process,
+      price:     p.price,
+      cost:      p.cost,
+      weight:    p.weight,
+      available: true,
+      stock:     100,
+      highlight: p.highlight,
+    });
   }
 }
 
 /**
  * Seed a customer with default or overridden data.
  *
- * @param {import('better-sqlite3').Database} db
+ * @param {import('postgres').Sql} sql
  * @param {object} [overrides]
- * @returns {object} The created customer
+ * @returns {Promise<object>}
  */
-export function seedCustomer(db, overrides = {}) {
-  const repos = createTestRepos(db);
+export async function seedCustomer(sql, overrides = {}) {
+  const repos = createTestRepos(sql);
   const phone = overrides.phone || "5541999990000";
-  repos.customers.upsert(phone, { push_name: overrides.pushName || "TestUser" });
-  if (overrides.name) repos.customers.updateInfo(phone, { name: overrides.name });
-  if (overrides.cep) repos.customers.updateInfo(phone, { cep: overrides.cep });
-  if (overrides.accessStatus) repos.customers.setAccessStatus(phone, overrides.accessStatus);
+  await repos.customers.upsert(phone, { push_name: overrides.pushName || "TestUser" });
+  if (overrides.name)         await repos.customers.updateInfo(phone, { name: overrides.name });
+  if (overrides.cep)          await repos.customers.updateInfo(phone, { cep: overrides.cep });
+  if (overrides.accessStatus) await repos.customers.setAccessStatus(phone, overrides.accessStatus);
   return repos.customers.getByPhone(phone);
 }
