@@ -10,6 +10,7 @@ import {
   AuthStorage,
   ModelRegistry,
   SettingsManager,
+  SessionManager,
   createAgentSession,
 } from "@mariozechner/pi-coding-agent";
 
@@ -33,6 +34,7 @@ const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const QUEUE = "agent.enriched";
 const CONFIG_DIR = process.env.CONFIG_DIR || "/config/pi";
 const WORKSPACE = process.env.TENANTS_DIR || "./tenants";
+const SESSIONS_DIR = path.join(process.env.DATA_DIR || "/data", "pi-sessions");
 
 // Pi Agent SDK setup (shared across invocations)
 const authStorage = AuthStorage.create();
@@ -130,6 +132,7 @@ async function main() {
         if (cached?.session) { try { cached.session.dispose(); } catch {} }
         const customTools = buildCustomTools(phone, r, botPhone, displayName);
         console.log(`[agent] Creating session model=${model?.id} tools=${customTools.length}`);
+        const sessionDir = path.join(SESSIONS_DIR, config.tenant_id, phone);
         const result = await createAgentSession({
           model,
           thinking,
@@ -138,6 +141,7 @@ async function main() {
           authStorage,
           modelRegistry,
           settingsManager,
+          sessionManager: SessionManager.create(tenantWorkspace, sessionDir),
           customTools,
         });
         session = result.session;
