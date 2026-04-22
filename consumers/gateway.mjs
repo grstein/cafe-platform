@@ -23,11 +23,8 @@ const QUEUE = "gateway.incoming";
 const REFERRAL_CODE_PREFIX = process.env.REFERRAL_CODE_PREFIX || "REF-";
 const _escapedPrefix = REFERRAL_CODE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const CODE_PATTERN = new RegExp(`\\b${_escapedPrefix}[A-HJ-NP-Z2-9]{4}\\b`, "i");
-const PROMPT_COOLDOWN = 5 * 60 * 1000;
-
 // In-memory state
 const rateLimits = new Map();
-const promptCooldowns = new Map();
 let _allowlist = null;
 let _allowlistLoadedAt = 0;
 const ALLOWLIST_TTL = 60 * 1000;
@@ -145,14 +142,8 @@ async function main() {
               return;
             }
           }
-          const lastPrompt = promptCooldowns.get(phone);
-          if (!lastPrompt || Date.now() - lastPrompt > PROMPT_COOLDOWN) {
-            promptCooldowns.set(phone, Date.now());
-            const envelope = createEnvelope({ phone, text, pushName });
-            setResponse(envelope, `Olá! O ${config.display_name} funciona por indicação. Se você tem um código, envie ele aqui (formato ${REFERRAL_CODE_PREFIX}XXXX). Se não, peça a indicação de alguem que já é cliente! ☕`);
-            setStage(envelope, "outgoing");
-            publish(channel, "msg.flow", "outgoing", envelope);
-          }
+          // Unknown number with no valid referral code — silent discard.
+          console.log(`[gateway] Denied ${phone} (not in allowlist, no valid code)`);
           ack(channel, msg);
           return;
         }
@@ -200,7 +191,6 @@ async function main() {
   setInterval(() => {
     const cutoff = Date.now() - 30 * 60 * 1000;
     for (const [k, v] of rateLimits) { if (v.windowStart < cutoff) rateLimits.delete(k); }
-    for (const [k, v] of promptCooldowns) { if (v < cutoff) promptCooldowns.delete(k); }
   }, 5 * 60 * 1000);
 
   console.log(`🟢 Gateway listening on ${QUEUE}`);

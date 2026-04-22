@@ -1,6 +1,8 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { EVOLUTION_PAYLOAD, PHONES } from "../../helpers/fixtures.mjs";
+import { EVOLUTION_PAYLOAD, PHONES, APP_CONFIG } from "../../helpers/fixtures.mjs";
+import { createMockChannel } from "../../helpers/rabbitmq.mjs";
+import { createTestDB, createTestRepos, seedCustomer } from "../../helpers/db.mjs";
 
 // Copy pure functions from gateway.mjs for testing
 function parseIncomingPayload(raw) {
@@ -73,6 +75,104 @@ describe("gateway session reset", () => {
     const resetEvent = published.find(p => p.routingKey === "session_reset");
     assert.ok(resetEvent);
     assert.equal(resetEvent.data.phone, PHONES.gustavo);
+  });
+});
+
+// ── Access control (allowlist enforcement) ───────────────────────────────────
+
+// Inline the access-control logic mirrored from gateway.mjs so we can unit-test
+// it without spinning up RabbitMQ.
+const REFERRAL_CODE_PREFIX = "TEST-";
+const _esc = REFERRAL_CODE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const CODE_PATTERN = new RegExp(`\\b${_esc}[A-HJ-NP-Z2-9]{4}\\b`, "i");
+
+function handleAccess({ phone, text, pushName }, config, repos, mockChannel) {
+  const allowlist = { exact: new Set([PHONES.primary]), prefixes: [] };
+  const allowed = isAllowlisted(phone, allowlist);
+
+  if (!allowed) {
+    const customer = repos.customers.getByPhone(phone);
+    if (!customer || customer.access_status === "blocked") {
+      const codeMatch = text.match(CODE_PATTERN);
+      if (codeMatch) {
+        const code = codeMatch[0].toUpperCase();
+        const referral = repos.referrals.validate(code);
+        if (referral) {
+          repos.customers.upsert(phone, { push_name: pushName, access_status: "invited", referred_by_phone: referral.referrer_phone });
+          mockChannel.publish("msg.flow", "outgoing", Buffer.from(JSON.stringify({ type: "welcome", phone })));
+          return "welcome";
+        }
+      }
+      // Unknown number, no valid code → silent discard
+      return "denied";
+    }
+    // Customer exists and is not blocked (invited/active) → fall through
+  } else {
+    repos.customers.upsert(phone, { push_name: pushName, access_status: "active" });
+  }
+
+  mockChannel.publish("msg.flow", "validated", Buffer.from(JSON.stringify({ phone, text })));
+  return "allowed";
+}
+
+describe("gateway access control", () => {
+  let db, repos;
+  beforeEach(() => {
+    db = createTestDB();
+    repos = createTestRepos(db);
+  });
+
+  it("allows allowlisted number through to validated", () => {
+    const ch = createMockChannel();
+    const result = handleAccess(
+      { phone: PHONES.primary, text: "oi", pushName: "Gustavo" },
+      APP_CONFIG, repos, ch
+    );
+    assert.equal(result, "allowed");
+    assert.equal(ch.published.length, 1);
+    assert.equal(ch.published[0].routingKey, "validated");
+  });
+
+  it("silently discards unknown number with no referral code — no message published", () => {
+    const ch = createMockChannel();
+    const result = handleAccess(
+      { phone: PHONES.unknown, text: "oi quero cafe", pushName: "Intruder" },
+      APP_CONFIG, repos, ch
+    );
+    assert.equal(result, "denied");
+    assert.equal(ch.published.length, 0, "must publish nothing for unknown numbers");
+  });
+
+  it("silently discards unknown number whose text does not contain a code", () => {
+    const ch = createMockChannel();
+    const result = handleAccess(
+      { phone: PHONES.unknown, text: "quero saber o preco", pushName: "Stranger" },
+      APP_CONFIG, repos, ch
+    );
+    assert.equal(result, "denied");
+    assert.equal(ch.published.length, 0);
+  });
+
+  it("silently discards blocked customer even if in allowlist by customer record", () => {
+    seedCustomer(db, { phone: PHONES.unknown, accessStatus: "blocked" });
+    const ch = createMockChannel();
+    const result = handleAccess(
+      { phone: PHONES.unknown, text: "oi", pushName: "Blocked" },
+      APP_CONFIG, repos, ch
+    );
+    assert.equal(result, "denied");
+    assert.equal(ch.published.length, 0);
+  });
+
+  it("allows invited customer (joined via referral) through even if not in static allowlist", () => {
+    seedCustomer(db, { phone: PHONES.unknown, access_status: "invited" });
+    const ch = createMockChannel();
+    const result = handleAccess(
+      { phone: PHONES.unknown, text: "oi", pushName: "Invited" },
+      APP_CONFIG, repos, ch
+    );
+    assert.equal(result, "allowed");
+    assert.equal(ch.published[0].routingKey, "validated");
   });
 });
 
