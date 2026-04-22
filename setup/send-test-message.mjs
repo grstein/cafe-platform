@@ -23,7 +23,11 @@ const nameIdx = args.indexOf("--name");
 const phone = phoneIdx !== -1 ? args[phoneIdx + 1] : "5500000000001";
 const stage = stageIdx !== -1 ? args[stageIdx + 1] : "incoming";
 const pushName = nameIdx !== -1 ? args[nameIdx + 1] : "Test User";
-const text = args.find(a => !a.startsWith("--") && args[args.indexOf(a) - 1]?.startsWith("--") === false);
+const text = args.find((a, i) => {
+  if (a.startsWith("--")) return false;
+  const prev = args[i - 1];
+  return prev === undefined || !prev.startsWith("--");
+});
 
 const uri = process.env.RABBITMQ_URI || "amqp://admin:password@localhost:5672/evolution";
 
