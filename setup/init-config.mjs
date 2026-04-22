@@ -37,7 +37,7 @@ const sql = getDB();
 
 await sql`
   INSERT INTO app_config (id, config)
-  VALUES (1, ${JSON.stringify(raw)}::jsonb)
+  VALUES (1, ${sql.json(raw)})
   ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = NOW()
 `;
 console.log("✅ app_config seeded from config.json");

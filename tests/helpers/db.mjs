@@ -50,7 +50,7 @@ export async function createTestDB() {
       { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6", emoji: "🧠" },
     ],
   };
-  await sql`INSERT INTO app_config (id, config) VALUES (1, ${JSON.stringify(testConfig)}::jsonb)`;
+  await sql`INSERT INTO app_config (id, config) VALUES (1, ${sql.json(testConfig)})`;
 
   return sql;
 }

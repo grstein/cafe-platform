@@ -59,7 +59,7 @@ export async function loadConfig(sql) {
     try {
       await sql`
         INSERT INTO app_config (id, config)
-        VALUES (1, ${JSON.stringify(raw)}::jsonb)
+        VALUES (1, ${sql.json(raw)})
         ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = NOW()
       `;
     } catch (err) {
@@ -94,7 +94,7 @@ export async function updateConfig(sql, partial) {
   const merged = deepMerge(current, partial);
   await sql`
     INSERT INTO app_config (id, config)
-    VALUES (1, ${JSON.stringify(merged)}::jsonb)
+    VALUES (1, ${sql.json(merged)})
     ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = NOW()
   `;
   _config = merged;
