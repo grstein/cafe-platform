@@ -1,0 +1,38 @@
+{
+  "display_name": "Demo Store",
+  "llm": {
+    "provider": "openrouter",
+    "model": "anthropic/claude-haiku-4.5",
+    "thinking": "medium"
+  },
+  "session": {
+    "ttl_minutes": 30,
+    "soft_limit": 40,
+    "hard_limit": 60,
+    "debounce_ms": 2500
+  },
+  "behavior": {
+    "humanize_delay_min_ms": 2000,
+    "humanize_delay_max_ms": 6000,
+    "rate_limit_per_min": 8,
+    "typing_indicator": true
+  },
+  "pix": {
+    "enabled": false
+  },
+  "bot_phone": "",
+  "available_models": [
+    {
+      "id": "anthropic/claude-haiku-4.5",
+      "name": "Claude Haiku 4.5",
+      "reasoning": true,
+      "supportsReasoningEffort": true
+    },
+    {
+      "id": "anthropic/claude-sonnet-4.6",
+      "name": "Claude Sonnet 4.6",
+      "reasoning": true,
+      "supportsReasoningEffort": true
+    }
+  ]
+}

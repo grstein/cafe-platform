@@ -1,0 +1,127 @@
+# ──────────────────────────────────────────────────────────────
+# cafe-platform — local / CI compose file.
+#
+# For local dev: copy `examples/tenants/demo-tenant` → `tenants/demo-tenant`
+# and `examples/pi-config` → `pi-config`, then `docker compose up -d`.
+#
+# For production, use the companion tenant repo's docker-compose.prod.yml
+# which pins `image: ghcr.io/…/cafe-platform` and named volumes.
+# ──────────────────────────────────────────────────────────────
+
+services:
+  rabbitmq:
+    container_name: platform_rabbitmq
+    image: rabbitmq:3-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: evolution
+    ports: ["127.0.0.1:15672:15672", "127.0.0.1:5672:5672"]
+    volumes: [rabbitmq_data:/var/lib/rabbitmq]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy: { resources: { limits: { memory: 512M } } }
+
+  # ── WhatsApp Bridge (Baileys) ──────────────────────────────────
+  whatsapp-bridge:
+    container_name: platform_whatsapp_bridge
+    build: { context: . }
+    command: ["node", "services/whatsapp-bridge.mjs"]
+    restart: unless-stopped
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    ports: ["127.0.0.1:3001:3001"]
+    env_file: [.env]
+    volumes: &bridge_vols
+      - ./tenants:/tenants:ro
+      - ./data:/data
+      - ./logs:/logs
+    networks: [platform]
+    deploy: { resources: { limits: { memory: 512M } } }
+
+  # ── Consumers (shared image, different entrypoints) ────────────
+  gateway:
+    container_name: platform_gateway
+    build: { context: . }
+    command: ["node", "consumers/gateway.mjs"]
+    restart: unless-stopped
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    env_file: [.env]
+    volumes: &consumer_vols
+      - ./tenants:/tenants:ro
+      - ./data:/data
+      - ./logs:/logs
+      - ./pi-config:/config/pi:ro
+    networks: [platform]
+    deploy: { resources: { limits: { memory: 256M } } }
+
+  aggregator:
+    container_name: platform_aggregator
+    build: { context: . }
+    command: ["node", "consumers/aggregator.mjs"]
+    restart: unless-stopped
+    depends_on: { rabbitmq: { condition: service_healthy } }
+    env_file: [.env]
+    volumes: *consumer_vols
+    networks: [platform]
+    deploy: { resources: { limits: { memory: 256M } } }
+
+  enricher:
+    container_name: platform_enricher
+    build: { context: . }
+    command: ["node", "consumers/enricher.mjs"]
+    restart: unless-stopped
+    depends_on: { rabbitmq: { condition: service_healthy } }
+    env_file: [.env]
+    volumes: *consumer_vols
+    networks: [platform]
+    deploy: { resources: { limits: { memory: 256M } } }
+
+  agent:
+    container_name: platform_agent
+    build: { context: . }
+    command: ["node", "consumers/agent.mjs"]
+    restart: unless-stopped
+    depends_on: { rabbitmq: { condition: service_healthy } }
+    env_file: [.env]
+    volumes: *consumer_vols
+    networks: [platform]
+    deploy: { resources: { limits: { memory: 1G } } }
+
+  sender:
+    container_name: platform_sender
+    build: { context: . }
+    command: ["node", "consumers/sender.mjs"]
+    restart: unless-stopped
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    env_file: [.env]
+    volumes: *consumer_vols
+    networks: [platform]
+    deploy: { resources: { limits: { memory: 256M } } }
+
+  analytics:
+    container_name: platform_analytics
+    build: { context: . }
+    command: ["node", "consumers/analytics.mjs"]
+    restart: unless-stopped
+    depends_on: { rabbitmq: { condition: service_healthy } }
+    env_file: [.env]
+    volumes: *consumer_vols
+    networks: [platform]
+    deploy: { resources: { limits: { memory: 256M } } }
+
+volumes:
+  rabbitmq_data:
+
+networks:
+  platform:
+    name: platform
+    driver: bridge

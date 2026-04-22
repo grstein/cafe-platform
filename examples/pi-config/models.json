@@ -1,0 +1,22 @@
+{
+  "providers": {
+    "openrouter": {
+      "envVar": "OPENROUTER_API_KEY",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "models": [
+        {
+          "id": "anthropic/claude-haiku-4.5",
+          "name": "Claude Haiku 4.5",
+          "reasoning": true,
+          "supportsReasoningEffort": true
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6",
+          "name": "Claude Sonnet 4.6",
+          "reasoning": true,
+          "supportsReasoningEffort": true
+        }
+      ]
+    }
+  }
+}

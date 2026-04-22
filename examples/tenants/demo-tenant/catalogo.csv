@@ -1,0 +1,4 @@
+sku,nome,torrefacao,sca,perfil,preco,peso,disponivel,destaque
+DEMO-A-001,Produto A,Fornecedor Exemplo,82,Perfil equilibrado com notas suaves,39.90,250g,1,
+DEMO-B-001,Produto B,Fornecedor Exemplo,85,Perfil encorpado e aromatico,49.90,250g,1,Mais vendido
+DEMO-C-001,Produto C,Fornecedor Exemplo,88,Perfil premium com acidez delicada,69.90,250g,1,Edicao limitada

@@ -1,0 +1,17 @@
+# Allowlist — números autorizados a interagir com o bot.
+#
+# Formato: um número por linha, no padrão internacional DDI+DDD+numero,
+# apenas dígitos, sem espaços, parênteses ou traços.
+#
+# Exemplo:
+#   5541999998888   # Brasil (+55), DDD 41, número 99999-8888
+#
+# Linhas em branco e linhas começando com '#' são ignoradas.
+# Qualquer texto após '#' na mesma linha também é tratado como comentário.
+#
+# Por padrão nenhum número está autorizado — descomente ou adicione
+# abaixo os números de teste antes de subir a plataforma.
+#
+# 5500000000001  # Test user 1
+# 5500000000002  # Test user 2
+# 5500000000003  # Test user 3

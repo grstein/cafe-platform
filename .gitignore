@@ -1,0 +1,14 @@
+node_modules/
+data/
+logs/
+.env
+.env.local
+.env.*.local
+*.db
+*.db-journal
+.DS_Store
+.claude/settings.local.json
+
+# Tenant-specific data — belongs to a separate private repo, not this one.
+/tenants/
+/pi-config/
