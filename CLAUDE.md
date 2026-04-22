@@ -95,8 +95,13 @@ data), `metadata` (stage, timings, command_result).
 - `createAgentSession({ model, thinking, cwd: tenantWorkspace, agentDir: CONFIG_DIR, ... })` — `cwd` and `agentDir` are the correct parameter names
 - `agentDir` = `CONFIG_DIR` = `/config/pi` (mounted from `pi-config/`) — SDK discovers `AGENTS.md`, `skills/`, `prompts/` here
 - `cwd` = `tenantWorkspace` = `/tenants/${TENANT_ID}` — SDK walks up looking for `AGENTS.md`
+- **Sessions dir**: the SDK writes session files to `agentDir/sessions/<encoded-cwd>/`. Since
+  `pi-config/` is mounted `:ro`, a custom `SessionManager` is passed pointing to
+  `/data/pi-sessions/<tenant_id>/<phone>` (writable `cafe_data` volume). Never mount
+  `pi-config` read-write just to satisfy this — always pass `sessionManager` explicitly.
 - Session cache keyed by `phone` (string)
 - `session.prompt(text)` is async and fire-and-forget; call `session.getLastAssistantText()` after awaiting to get response
+- `getLastAssistantText()` returns `undefined` when the LLM call errors (check `OPENROUTER_API_KEY` validity if this happens)
 
 ## Commands
 
@@ -150,6 +155,11 @@ auth state + logs) lives in named Docker volumes (`cafe_data`,
 CI (`.github/workflows/ci.yml`) runs on Node.js 22 — required so that
 `node --test` expands globs like `tests/unit/**/*.test.mjs` natively
 without relying on the shell.
+
+**First-deploy checklist** (after `docker compose up -d`):
+1. `docker compose exec gateway node setup/rabbitmq-init.mjs` — creates exchanges/queues (must run once, or after topology changes)
+2. `docker compose exec gateway node setup/seed-products.mjs` — seeds catalog from `catalogo.csv`
+3. Verify `OPENROUTER_API_KEY` is valid: `curl -s -H "Authorization: Bearer $KEY" https://openrouter.ai/api/v1/auth/key`
 
 ## Baileys Notes
 
