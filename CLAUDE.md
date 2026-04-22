@@ -56,8 +56,20 @@ fanout (`dlx`). 10 queues. Routing keys are plain stage names —
 environment variable. `shared/lib/config.mjs:getTenantId()` throws if
 unset. `getConfig()` reads `${TENANTS_DIR}/${TENANT_ID}/tenant.json` and
 merges it over defaults. This repo ships an `examples/` folder with a
-demo tenant and a generic `pi-config/` to let contributors run the stack
-locally; production deployments mount a real tenant via volumes.
+demo tenant (`examples/tenants/demo-tenant/`) and a generic
+`examples/pi-config/` to let contributors run the stack locally with
+`cp -r examples/... tenants/... && cp -r examples/pi-config pi-config`;
+production deployments mount a real tenant via volumes.
+
+**Per-tenant id prefixes**: Two env vars control user-visible identifier
+prefixes so the engine stays tenant-agnostic:
+- `ORDER_PREFIX` — prepended to order display IDs (e.g. `#CDA-123`) and
+  to PIX identifiers (non-alphanumeric chars stripped there).
+- `REFERRAL_CODE_PREFIX` — prepended to generated referral codes
+  (default `REF-`).
+
+Both are read lazily at call time, so changing them and restarting the
+affected consumers is enough to retenant without a rebuild.
 
 **Database**: Single SQLite file at `${DATA_DIR}/${TENANT_ID}.db`.
 Connection managed by `shared/db/connection.mjs` as a singleton. Access
@@ -123,10 +135,21 @@ npm install
 ## Deployment
 
 The engine is published as a Docker image (via `.github/workflows/publish.yml`)
-to `ghcr.io/<owner>/cafe-platform`. A single-tenant production deploy
-combines this image with a tenant-specific private repo that owns the
-`tenants/` directory, `pi-config/`, and VPS-side operational scripts. See
-that tenant repo's `deploy.md` for the runbook.
+to `ghcr.io/grstein/cafe-platform`. Tags: `latest`, the full commit SHA,
+the 7-char short SHA, and semver tags when a `v*` tag is pushed.
+
+A production deploy combines this image with a **tenant-specific private
+repo** that owns `tenants/${TENANT_ID}/`, `pi-config/`, the production
+compose file (`docker-compose.prod.yml` with `image:` instead of
+`build:`), and the deploy workflow. The VPS clones the tenant repo, its
+`deploy.yml` SSHes in on push to `main` and runs `git pull` + `docker
+compose pull` + `docker compose up -d`. Persistent data (SQLite + Baileys
+auth state + logs) lives in named Docker volumes (`cafe_data`,
+`cafe_logs`) that survive image upgrades.
+
+CI (`.github/workflows/ci.yml`) runs on Node.js 22 — required so that
+`node --test` expands globs like `tests/unit/**/*.test.mjs` natively
+without relying on the shell.
 
 ## Baileys Notes
 
