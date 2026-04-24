@@ -1,11 +1,15 @@
 /**
- * @fileoverview Catalog search tool for the Pi Agent — async repos.
+ * @fileoverview Catalog tools for the Pi Agent — search + per-product detail.
  */
 
+import fs from "node:fs/promises";
+import path from "node:path";
 import { defineTool } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 export function createCatalogTools(repos) {
+  const configDir = path.resolve(process.env.CONFIG_DIR || "/config/pi");
+
   const searchCatalog = defineTool({
     name: "search_catalog",
     label: "Buscar Catálogo",
@@ -17,6 +21,7 @@ export function createCatalogTools(repos) {
     promptGuidelines: [
       "Sempre consulte search_catalog antes de recomendar cafés ou criar pedidos.",
       "Para ver todos os cafés disponíveis, chame sem parâmetros.",
+      "Para detalhes de um café específico (origem, produtor, história, preparo), use get_product_details.",
     ],
     parameters: Type.Object({
       query: Type.Optional(Type.String({ description: "Busca por nome, perfil sensorial, torrefação ou origem" })),
@@ -60,5 +65,77 @@ export function createCatalogTools(repos) {
     },
   });
 
-  return [searchCatalog];
+  const getProductDetails = defineTool({
+    name: "get_product_details",
+    label: "Ficha do Café",
+    description:
+      "Retorna a ficha detalhada de um café específico pelo SKU: " +
+      "campos do catálogo + ficha em markdown (origem, produtor, notas sensoriais, " +
+      "preparo sugerido, harmonização) quando disponível.",
+    promptSnippet: "Busca a ficha detalhada de um café pelo SKU",
+    promptGuidelines: [
+      "Use quando o cliente pedir detalhes, história, origem, preparo ou harmonização de um café específico.",
+      "Para listar ou comparar, prefira search_catalog.",
+    ],
+    parameters: Type.Object({
+      sku: Type.String({ description: "SKU do produto" }),
+    }),
+
+    async execute(_toolCallId, params) {
+      const product = await repos.products.getBySku(params.sku);
+      if (!product) {
+        return {
+          content: [{ type: "text", text: `Produto não encontrado: ${params.sku}` }],
+          details: { found: false },
+        };
+      }
+
+      const baseParts = [
+        `SKU: ${product.sku}`,
+        `Nome: ${product.name}`,
+        `Preço: R$ ${Number(product.price).toFixed(2)}`,
+      ];
+      if (product.roaster) baseParts.push(`Torrefação: ${product.roaster}`);
+      if (product.sca_score) baseParts.push(`SCA: ${product.sca_score}`);
+      if (product.profile) baseParts.push(`Perfil: ${product.profile}`);
+      if (product.origin) baseParts.push(`Origem: ${product.origin}`);
+      if (product.process) baseParts.push(`Processo: ${product.process}`);
+      if (product.weight) baseParts.push(`Peso: ${product.weight}`);
+      if (product.highlight) baseParts.push(`Destaque: ${product.highlight}`);
+      baseParts.push(`Disponível: ${product.available ? "sim" : "não"}`);
+
+      let markdown = null;
+      let knowledgeStatus = "none";
+
+      if (product.knowledge_file) {
+        const resolved = path.resolve(configDir, product.knowledge_file);
+        if (!resolved.startsWith(configDir + path.sep) && resolved !== configDir) {
+          knowledgeStatus = "blocked";
+        } else {
+          try {
+            markdown = await fs.readFile(resolved, "utf-8");
+            knowledgeStatus = "ok";
+          } catch {
+            knowledgeStatus = "missing";
+          }
+        }
+      }
+
+      const sections = [baseParts.join(" | ")];
+      if (markdown) {
+        sections.push("\n--- FICHA DETALHADA ---\n" + markdown.trim());
+      } else if (knowledgeStatus === "missing") {
+        sections.push("\n(Ficha detalhada referenciada mas arquivo não encontrado.)");
+      } else if (knowledgeStatus === "blocked") {
+        sections.push("\n(Caminho de ficha inválido — ignorado.)");
+      }
+
+      return {
+        content: [{ type: "text", text: sections.join("\n") }],
+        details: { found: true, product, knowledgeStatus },
+      };
+    },
+  });
+
+  return [searchCatalog, getProductDetails];
 }

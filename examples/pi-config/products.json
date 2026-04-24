@@ -1,0 +1,34 @@
+[
+  {
+    "sku": "DEMO-MRCHOC-250",
+    "name": "Mr. Chocolate",
+    "roaster": "Demo Roaster A",
+    "sca_score": 84,
+    "profile": "Achocolatado, encorpado, doce",
+    "origin": "Cerrado Mineiro",
+    "process": "Natural",
+    "price": 48.00,
+    "cost": 27.00,
+    "weight": "250g",
+    "available": true,
+    "stock": 100,
+    "highlight": "porta de entrada",
+    "knowledge_file": "catalog/mr-chocolate.md"
+  },
+  {
+    "sku": "DEMO-HONEY-250",
+    "name": "Honey & Coffee",
+    "roaster": "Demo Roaster B",
+    "sca_score": 87,
+    "profile": "Mel, frutado, complexo",
+    "origin": "Mantiqueira de Minas",
+    "process": "Honey",
+    "price": 62.00,
+    "cost": 34.00,
+    "weight": "250g",
+    "available": true,
+    "stock": 60,
+    "highlight": "premium",
+    "knowledge_file": "catalog/honey-and-coffee.md"
+  }
+]

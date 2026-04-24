@@ -33,6 +33,26 @@ Search the product catalog. Use before recommending anything.
   availability. `details.count` and `details.products[]`.
 - Empty result: "Nenhum produto encontrado para os filtros informados."
 
+### `get_product_details`
+
+Return the detailed sheet for one product by SKU: catalog fields plus a
+markdown ficha (origin, producer, tasting notes, brewing suggestions,
+pairings) when available.
+
+- File: `shared/tools/catalog-tools.mjs`
+- Params:
+  - `sku: string` (required)
+- Reads `products.knowledge_file` (a path relative to `CONFIG_DIR`,
+  e.g. `catalog/mr-chocolate.md`) and inlines its contents.
+- Path-traversal guard: resolved path must stay inside `CONFIG_DIR`;
+  otherwise the markdown is skipped with a note.
+- Returns text with the DB summary line followed by a `--- FICHA
+  DETALHADA ---` block containing the markdown (when present).
+  `details.found`, `details.product`, `details.knowledgeStatus`
+  (`"ok" | "missing" | "blocked" | "none"`).
+- Use for drill-down on a single café; use `search_catalog` for
+  listing/comparing.
+
 ## Cart
 
 Cart tools operate on the current `phone` (bound at tool creation time).

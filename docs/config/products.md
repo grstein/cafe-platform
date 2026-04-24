@@ -55,7 +55,7 @@ A JSON **array** of product objects:
 | `available` | boolean | no | `true` | Stored as `1`/`0` in `products.available` (INTEGER). When false, `search_catalog` hides it by default. |
 | `stock` | integer | no | `0` | Informational; not enforced when ordering. |
 | `highlight` | string | no | `null` | Short marketing hook. |
-| `knowledge_file` | string | no | `null` | Path (relative to `pi-config/`) of extended product notes. Not auto-loaded; reserved for future skill/tool integrations. |
+| `knowledge_file` | string | no | `null` | Path (relative to `CONFIG_DIR` / `pi-config/`) of a markdown ficha for the product. Consumed by the `get_product_details` tool — see [Extended product sheet](#extended-product-sheet-knowledge_file). |
 
 ## Upsert semantics
 
@@ -106,7 +106,32 @@ clear error message.
   filter defaults to `true`.
 - `add_to_cart`, `create_order`, `checkout` look up by `sku` and refuse
   unavailable products.
-- `knowledge_file` is stored but not currently consumed.
+- `knowledge_file` is consumed by the `get_product_details` tool (see
+  below), not by `search_catalog`.
+
+## Extended product sheet (`knowledge_file`)
+
+For storytelling that doesn't fit in the DB columns (origin history,
+producer notes, detailed tasting profile, brewing suggestions, pairings),
+point `knowledge_file` at a markdown file relative to `CONFIG_DIR`
+(typically `pi-config/`).
+
+Convention: keep these under `pi-config/catalog/<slug>.md`.
+
+```json
+{
+  "sku": "DEMO-MRCHOC-250",
+  "name": "Mr. Chocolate",
+  "knowledge_file": "catalog/mr-chocolate.md"
+}
+```
+
+The `get_product_details(sku)` tool resolves the path against
+`CONFIG_DIR`, reads the file, and inlines it in the response. Paths that
+escape `CONFIG_DIR` (e.g. `../../etc/passwd`) are blocked. Missing files
+produce a graceful fallback — the tool still returns the DB fields.
+
+See `examples/pi-config/catalog/` for templates.
 
 ## Related
 
