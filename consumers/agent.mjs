@@ -102,6 +102,7 @@ async function main() {
       const appConfig = envelope.context.app_config || getConfig();
       const customer = envelope.context.customer;
       const contextBlock = envelope.context.context_block || "";
+      const turnBlock = envelope.context.turn_block || "";
       const r = getRepos();
       const botPhone = process.env.BOT_PHONE || appConfig.bot_phone || "";
       const displayName = appConfig.display_name || "";
@@ -110,15 +111,15 @@ async function main() {
       if (!model) { console.error("[agent] No model available"); nack(channel, msg, false); return; }
 
       const userText = envelope.payload.merged_text;
-      const enrichedPrompt = contextBlock ? `${contextBlock}\n\n${userText}` : userText;
       const thinking = appConfig.llm?.thinking || "medium";
       const ttlMs = (appConfig.session?.ttl_minutes || 30) * 60 * 1000;
 
       // Reuse or create session
       const cached = sessionCache.get(phone);
       const now = Date.now();
+      const isNewSession = !(cached && now - cached.lastUsed < ttlMs);
 
-      if (cached && now - cached.lastUsed < ttlMs) {
+      if (!isNewSession) {
         session = cached.session;
         cached.lastUsed = now;
         cached.msgCount++;
@@ -141,6 +142,16 @@ async function main() {
         session = result.session;
         sessionCache.set(phone, { session, lastUsed: now, msgCount: 1 });
       }
+
+      // Prepend stable context ONLY on new session (cache miss / TTL expired).
+      // Pi AgentSession persists its own message history, so re-injecting the
+      // same customer/cart/orders every turn just inflates tokens and duplicates
+      // history. Turn-local context (batch marker) is always prepended.
+      const promptParts = [];
+      if (isNewSession && contextBlock) promptParts.push(contextBlock);
+      if (turnBlock) promptParts.push(turnBlock);
+      promptParts.push(userText);
+      const enrichedPrompt = promptParts.join("\n\n");
 
       console.log(`[agent] Prompting (${enrichedPrompt.length} chars)...`);
       await session.prompt(enrichedPrompt);

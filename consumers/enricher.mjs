@@ -32,7 +32,12 @@ function getRepos() {
   return repos;
 }
 
-function buildContextBlock(customer, cart, orders, history, config, envelope) {
+/**
+ * Stable context injected ONCE per Pi Agent session (first turn after cache miss / TTL).
+ * Subsequent turns rely on Pi SessionManager's own message history and on tools
+ * (view_cart, list_orders) for fresh data — no need to re-inject.
+ */
+function buildContextBlock(customer, cart, orders, history) {
   const lines = ["[CONTEXTO DO CLIENTE]"];
 
   if (customer) {
@@ -75,14 +80,21 @@ function buildContextBlock(customer, cart, orders, history, config, envelope) {
     }
   }
 
-  if (envelope.payload.is_batch) {
-    lines.push("", `[MENSAGENS EM SEQUÊNCIA — ${envelope.payload.batch_count} mensagens]`);
-    for (const m of envelope.payload.messages) {
-      lines.push(`${String(m.ts || "").substring(11, 19)} — "${m.text}"`);
-    }
-    lines.push("(Trate como uma única solicitação)");
-  }
+  return lines.join("\n");
+}
 
+/**
+ * Per-turn ephemeral block. Currently only the batch marker when the aggregator
+ * merged multiple WhatsApp messages into a single turn. Prepended on every turn
+ * it applies — not stored as stable context.
+ */
+function buildTurnBlock(envelope) {
+  if (!envelope.payload.is_batch) return "";
+  const lines = [`[MENSAGENS EM SEQUÊNCIA — ${envelope.payload.batch_count} mensagens]`];
+  for (const m of envelope.payload.messages) {
+    lines.push(`${String(m.ts || "").substring(11, 19)} — "${m.text}"`);
+  }
+  lines.push("(Trate como uma única solicitação)");
   return lines.join("\n");
 }
 
@@ -115,13 +127,15 @@ async function main() {
       const softLimit = config.session?.soft_limit || 40;
       const hardLimit = config.session?.hard_limit || 60;
 
-      const contextBlock = buildContextBlock(customer, cart, orders, history, config, envelope);
+      const contextBlock = buildContextBlock(customer, cart, orders, history);
+      const turnBlock = buildTurnBlock(envelope);
 
       enrichContext(envelope, "customer", customer);
       enrichContext(envelope, "cart", cart);
       enrichContext(envelope, "last_orders", orders);
       enrichContext(envelope, "conversation_history", history);
       enrichContext(envelope, "context_block", contextBlock);
+      enrichContext(envelope, "turn_block", turnBlock);
       enrichContext(envelope, "app_config", config);
       enrichContext(envelope, "session_msg_count", msgCount);
       enrichContext(envelope, "session_soft_limit", softLimit);
