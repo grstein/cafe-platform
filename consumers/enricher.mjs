@@ -101,6 +101,7 @@ async function main() {
       console.log(`[enricher] Processing ${phone} text="${envelope.payload?.merged_text?.substring(0, 50)}"`);
 
       const r = getRepos();
+      const config = getConfig();
       const pushName = envelope.payload.messages[0]?.pushName;
       await r.customers.upsert(phone, { push_name: pushName });
       const customer = await r.customers.getByPhone(phone);
