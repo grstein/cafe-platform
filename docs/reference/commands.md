@@ -17,8 +17,7 @@ the agent: the gateway publishes directly to `msg.flow outgoing`.
 | `ajuda`, `/ajuda` | `/ajuda` |
 | `modelo`, `/modelo`, `/modelo <n>`, `modelo <n>` | `/modelo` |
 | `indicar`, `/indicar`, `meucodigo`, `/meucodigo` | `/indicar` |
-| `carrinho`, `/carrinho` | `/carrinho` |
-| `pedido`, `/pedido` | `/pedido` |
+| `carrinho`, `/carrinho`, `pedido`, `/pedido` | `/carrinho` |
 | `confirma`, `confirmar`, `/confirma`, `/confirmar` | `/confirma` |
 | `cancelar`, `cancela`, `/cancelar`, `/cancela` | `/cancelar` |
 | `reiniciar`, `/reiniciar` | `/reiniciar` |
@@ -62,24 +61,22 @@ Show the customer's referral code + shareable `wa.me` link.
 - Response: "Seu código: <code>. Link: …. Quando seu indicado fizer a
   primeira compra, você ganha 10% de desconto."
 
-### `/carrinho`
+### `/carrinho` (alias: `/pedido`)
 
-Show current cart contents.
-
-- Params: none.
-- Reads: `cart_items` joined with `products` for names.
-- Empty cart → "Carrinho vazio."
-- Non-empty → item lines + subtotal. Handler: `shared/commands/carrinho.mjs`.
-
-### `/pedido`
-
-Show the pending (unconfirmed) order, if any.
+Show the current state: a pending order takes precedence over the cart.
 
 - Params: none.
-- Reads: `orders.getPending(phone)` — returns the most recent order with
-  `status = "pending"`.
-- No pending → "Nenhum pedido pendente no momento…"
-- Pending → item lines, total, and prompt to `/confirma` or `/cancelar`.
+- Reads: `orders.getPending(phone)` first; falls back to `cart_items`
+  joined with `products`.
+- Pending order → item lines, total, prompt to `/confirma` or `/cancelar`.
+- No pending, empty cart → "Carrinho vazio…"
+- No pending, non-empty cart → item lines + subtotal.
+- Handler: `shared/commands/carrinho.mjs`. `/pedido` is kept as an alias
+  for backward compatibility.
+
+While an order is pending, the `add_to_cart`, `checkout`, and
+`create_order` tools are blocked — the customer must `/confirma` or
+`/cancelar` first.
 
 ### `/confirma`
 

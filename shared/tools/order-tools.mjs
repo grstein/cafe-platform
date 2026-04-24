@@ -33,6 +33,13 @@ export function createOrderTools(phone, repos) {
     }),
 
     async execute(_toolCallId, params) {
+      const pending = await repos.orders.getPending(phone);
+      if (pending) {
+        return {
+          content: [{ type: "text", text: `Cliente tem o pedido #${ORDER_PREFIX}${pending.id} aguardando pagamento (R$ ${Number(pending.total).toFixed(2)}). Peça para enviar /confirma para pagar ou /cancelar para desistir antes de montar um novo pedido.` }],
+          details: { error: true, pendingOrderId: pending.id },
+        };
+      }
       for (const item of params.items) {
         const product = await repos.products.getBySku(item.sku);
         if (!product) {

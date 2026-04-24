@@ -7,6 +7,13 @@ import { Type } from "@sinclair/typebox";
 
 const ORDER_PREFIX = process.env.ORDER_PREFIX || "";
 
+async function pendingOrderBlock(phone, repos) {
+  const pending = await repos.orders.getPending(phone);
+  if (!pending) return null;
+  const text = `Cliente tem o pedido #${ORDER_PREFIX}${pending.id} aguardando pagamento (R$ ${Number(pending.total).toFixed(2)}). Peça para enviar /confirma para pagar ou /cancelar para desistir antes de montar um novo pedido.`;
+  return { content: [{ type: "text", text }], details: { error: true, pendingOrderId: pending.id } };
+}
+
 export function createCartTools(phone, repos) {
   const addToCart = defineTool({
     name: "add_to_cart",
@@ -22,6 +29,8 @@ export function createCartTools(phone, repos) {
       qty: Type.Optional(Type.Number({ description: "Quantidade (padrão: 1)" })),
     }),
     async execute(_toolCallId, params) {
+      const blocked = await pendingOrderBlock(phone, repos);
+      if (blocked) return blocked;
       const qty = params.qty || 1;
       const product = await repos.products.getBySku(params.sku);
       if (!product) return { content: [{ type: "text", text: `Erro: SKU "${params.sku}" não encontrado.` }], details: { error: true } };
@@ -108,6 +117,8 @@ export function createCartTools(phone, repos) {
       notes: Type.Optional(Type.String({ description: "Observações do cliente" })),
     }),
     async execute(_toolCallId, params) {
+      const blocked = await pendingOrderBlock(phone, repos);
+      if (blocked) return blocked;
       const { items, subtotal, count } = await repos.cart.getSummary(phone);
       if (count === 0) return { content: [{ type: "text", text: "Carrinho vazio — nada para fechar." }], details: { error: true } };
 

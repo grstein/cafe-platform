@@ -80,7 +80,32 @@ describe("cart tools", () => {
 
   it("checkout with empty cart errors", async () => {
     await repos.cart.clear(phone);
+    await repos.orders.cancel(phone);
     const r = await findTool("checkout").execute("c1", { customer_name: "Alice" });
     assert.ok(r.details.error);
+  });
+
+  it("add_to_cart blocked when pending order exists", async () => {
+    await repos.cart.clear(phone);
+    await repos.orders.cancel(phone);
+    const items = JSON.stringify([{ sku: "CDA-MOKA-MRCHOC-250", name: "Mr. Chocolate", qty: 1, unit_price: 48 }]);
+    await repos.orders.create(phone, { items, subtotal: 48, total: 48 });
+    const r = await findTool("add_to_cart").execute("c1", { sku: "CDA-MOKA-MRCHOC-250", qty: 1 });
+    assert.ok(r.details.error);
+    assert.ok(r.details.pendingOrderId);
+    assert.ok(r.content[0].text.includes("/confirma"));
+    assert.ok(r.content[0].text.includes("/cancelar"));
+    await repos.orders.cancel(phone);
+  });
+
+  it("checkout blocked when pending order exists", async () => {
+    await repos.cart.clear(phone);
+    await repos.orders.cancel(phone);
+    const items = JSON.stringify([{ sku: "CDA-MOKA-MRCHOC-250", name: "Mr. Chocolate", qty: 1, unit_price: 48 }]);
+    await repos.orders.create(phone, { items, subtotal: 48, total: 48 });
+    const r = await findTool("checkout").execute("c1", { customer_name: "Alice" });
+    assert.ok(r.details.error);
+    assert.ok(r.details.pendingOrderId);
+    await repos.orders.cancel(phone);
   });
 });

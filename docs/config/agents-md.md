@@ -69,8 +69,9 @@ instead of trying to handle them itself. The commands are handled by
 should treat them as "the system handles this when the user sends X".
 
 Full list to reference:
-`/ajuda`, `/carrinho`, `/pedido`, `/confirma`, `/cancelar`, `/reiniciar`,
-`/indicar`, `/modelo`. See [../reference/commands.md](../reference/commands.md).
+`/ajuda`, `/carrinho` (alias `/pedido`), `/confirma`, `/cancelar`,
+`/reiniciar`, `/indicar`, `/modelo`. See
+[../reference/commands.md](../reference/commands.md).
 
 Full list of tools to mention:
 `search_catalog`, `add_to_cart`, `update_cart`, `remove_from_cart`,

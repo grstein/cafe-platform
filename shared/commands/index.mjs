@@ -11,7 +11,7 @@ const aliases = {
   "ajuda": "/ajuda", "/ajuda": "/ajuda",
   "confirma": "/confirma", "confirmar": "/confirma", "/confirma": "/confirma", "/confirmar": "/confirma",
   "cancelar": "/cancelar", "cancela": "/cancelar", "/cancelar": "/cancelar", "/cancela": "/cancelar",
-  "pedido": "/pedido", "/pedido": "/pedido",
+  "pedido": "/carrinho", "/pedido": "/carrinho",
   "carrinho": "/carrinho", "/carrinho": "/carrinho",
   "indicar": "/indicar", "/indicar": "/indicar", "meucodigo": "/indicar", "/meucodigo": "/indicar",
   "modelo": "/modelo", "/modelo": "/modelo",
@@ -51,7 +51,6 @@ export function createCommandHandlers(repos, pixConfig, extraConfig = {}) {
       case "/ajuda":     return handleAjuda(phone);
       case "/confirma":  return handleConfirma(phone);
       case "/cancelar":  return handleCancelar(phone);
-      case "/pedido":    return handlePedido(phone);
       case "/carrinho":  return handleCarrinho(phone, repos);
       case "/indicar":   return handleIndicar(phone);
       default:           return null;
@@ -90,8 +89,7 @@ export function createCommandHandlers(repos, pixConfig, extraConfig = {}) {
       "/ajuda — Esta mensagem",
       "/modelo — Trocar modelo de IA",
       "/indicar — Seu código de indicação",
-      "/carrinho — Ver seu carrinho",
-      "/pedido — Ver pedido pendente",
+      "/carrinho — Ver seu carrinho ou pedido pendente",
       "/confirma — Confirmar pedido e receber PIX",
       "/cancelar — Cancelar pedido pendente",
       "/reiniciar — Recomeçar a conversa",
@@ -166,22 +164,6 @@ export function createCommandHandlers(repos, pixConfig, extraConfig = {}) {
       narration: `Cliente enviou /cancelar. Pedido #${fmtOrderId(order.id)} cancelado com sucesso no banco.`,
       order_id: order.id,
     };
-  }
-
-  async function handlePedido(phone) {
-    const order = await repos.orders.getPending(phone);
-    if (!order) {
-      return { command: "pedido", text: "Nenhum pedido pendente no momento. Quer que eu te ajude a montar um? ☕" };
-    }
-    const text = [
-      `📋 Pedido pendente #${fmtOrderId(order.id)}:`,
-      "",
-      formatItems(order),
-      `Total: R$ ${Number(order.total).toFixed(2)}`,
-      "",
-      "Envie /confirma para confirmar ou /cancelar para desistir.",
-    ].join("\n");
-    return { command: "pedido", text };
   }
 
   async function handleIndicar(phone) {

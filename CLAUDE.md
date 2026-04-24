@@ -154,8 +154,8 @@ A production deployment:
 - `tools/` — 11 Pi Agent tool definitions: `search_catalog`, `add_to_cart`,
   `update_cart`, `remove_from_cart`, `view_cart`, `checkout`, `create_order`,
   `list_orders`, `save_customer_info`, `invite_customer`, `get_referral_info`
-- `commands/` — static command handlers (all async): `/ajuda`, `/carrinho`, `/pedido`,
-  `/confirma`, `/cancelar`, `/reiniciar`, `/indicar`, `/modelo`
+- `commands/` — static command handlers (all async): `/ajuda`, `/carrinho`
+  (alias `/pedido`), `/confirma`, `/cancelar`, `/reiniciar`, `/indicar`, `/modelo`
 
 **Envelope** (`shared/lib/envelope.mjs`): `createEnvelope({ phone, text, pushName })`
 returns the message object flowing through the pipeline. Contains `phone`, `payload`

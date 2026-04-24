@@ -57,18 +57,21 @@ describe("command handlers", () => {
     await repos.cart.clear(phone);
   });
 
-  it("/pedido with no pending order", async () => {
-    const r = await handlers.tryHandle("/pedido", phone);
-    assert.equal(r.command, "pedido");
-    assert.ok(r.text.includes("Nenhum"));
-  });
-
-  it("/pedido shows order when pending", async () => {
+  it("/carrinho shows pending order when one exists (precedence over cart)", async () => {
+    await repos.cart.addItem(phone, "CDA-MOKA-MRCHOC-250", 1, 48);
     const items = JSON.stringify([{ sku: "CDA-MOKA-MRCHOC-250", name: "Mr. Chocolate", qty: 1, unit_price: 48 }]);
     await repos.orders.create(phone, { items, subtotal: 48, total: 48 });
-    const r = await handlers.tryHandle("/pedido", phone);
+    const r = await handlers.tryHandle("/carrinho", phone);
+    assert.equal(r.command, "carrinho");
     assert.ok(r.text.includes("pendente"));
+    assert.ok(r.text.includes("/confirma"));
     await repos.orders.cancel(phone);
+    await repos.cart.clear(phone);
+  });
+
+  it("/pedido is an alias for /carrinho", async () => {
+    const r = await handlers.tryHandle("/pedido", phone);
+    assert.equal(r.command, "carrinho");
   });
 
   it("/cancelar with no pending", async () => {
