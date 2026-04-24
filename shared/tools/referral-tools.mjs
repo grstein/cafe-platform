@@ -35,11 +35,8 @@ export function createReferralTools(phone, repos, botPhone, displayName = "") {
       await repos.customers.ensureReferralCode(invitedPhone);
       await repos.referrals.create(phone, invitedPhone, referrerCode);
 
-      const referrer = await repos.customers.getByPhone(phone);
-      const referrerName = referrer?.name || referrer?.push_name || "você";
-
       return {
-        content: [{ type: "text", text: `Número ${invitedPhone} liberado! Quando essa pessoa mandar mensagem aqui, vai ser atendida. Quando fizer a primeira compra, ${referrerName} ganha 10% de desconto no próximo pedido.` }],
+        content: [{ type: "text", text: `Número ${invitedPhone} liberado! Quando essa pessoa mandar mensagem aqui, já entra na nossa lista de amigos do café.` }],
         details: { invitedPhone, referrerCode },
       };
     },
@@ -57,7 +54,6 @@ export function createReferralTools(phone, repos, botPhone, displayName = "") {
     async execute() {
       const code = await repos.customers.ensureReferralCode(phone);
       const counts = await repos.referrals.countByReferrer(phone);
-      const pendingRewards = await repos.referrals.getPendingRewards(phone);
 
       const link = botPhone
         ? `https://wa.me/${botPhone}?text=${encodeURIComponent(code)}`
@@ -65,11 +61,7 @@ export function createReferralTools(phone, repos, botPhone, displayName = "") {
 
       const parts = [`Código de indicação: ${code}`];
       if (link) parts.push(`Link: ${link}`);
-      parts.push(`Indicações: ${counts?.total || 0} (${counts?.active || 0} ativos)`);
-      for (const r of pendingRewards) {
-        const name = r.referred_name || r.referred_push_name || r.referred_phone;
-        parts.push(`Recompensa pendente: ${name} comprou → ${r.reward_value}% desconto`);
-      }
+      parts.push(`Amigos que você já trouxe: ${counts?.total || 0} (${counts?.active || 0} ativos)`);
 
       return { content: [{ type: "text", text: parts.join("\n") }], details: { code, link, counts } };
     },

@@ -185,7 +185,7 @@ export function createCommandHandlers(repos, pixConfig, extraConfig = {}) {
 
     const lines = [`☕ Seu código de indicação: ${code}`, ""];
     if (link) { lines.push("Compartilha esse link:"); lines.push(link); lines.push(""); }
-    lines.push("Quando seu indicado fizer a primeira compra, você ganha 10% de desconto 🎉");
+    lines.push("Compartilha com quem você quer trazer pro clube do café ☕");
     return { command: "indicar", text: lines.join("\n") };
   }
 

@@ -11,7 +11,7 @@ export function createReferralRepo(sql) {
       await sql`
         INSERT INTO referrals (referrer_phone, referred_phone, referral_code_used, reward_type, reward_value)
         VALUES (${referrerPhone}, ${referredPhone}, ${codeUsed},
-                ${reward.type || "discount_percent"}, ${reward.value ?? 10})
+                ${reward.type || "none"}, ${reward.value ?? 0})
         ON CONFLICT (referrer_phone, referred_phone) DO NOTHING
       `;
       const [row] = await sql`
