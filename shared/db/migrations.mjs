@@ -172,12 +172,14 @@ export const migrations = [
 
 /**
  * Run all pending migrations against the given postgres.js client.
+ * Uses a PostgreSQL advisory lock to prevent race conditions when multiple
+ * containers start simultaneously and all try to apply the same migrations.
  *
  * @param {import('postgres').Sql} sql
  * @returns {Promise<void>}
  */
 export async function runMigrations(sql) {
-  // Ensure version tracking table exists
+  // Ensure version tracking table exists (CREATE TABLE IF NOT EXISTS is safe for concurrent calls)
   await sql`
     CREATE TABLE IF NOT EXISTS schema_version (
       version    INTEGER PRIMARY KEY,
@@ -185,22 +187,30 @@ export async function runMigrations(sql) {
     )
   `;
 
-  const [row] = await sql`SELECT COALESCE(MAX(version), 0) AS current FROM schema_version`;
-  const currentVersion = Number(row.current);
+  // Advisory lock key: hash of "cafe-platform-migrations" → prevents concurrent runs
+  const LOCK_KEY = 7462218743;
+  await sql`SELECT pg_advisory_lock(${LOCK_KEY})`;
+  try {
+    // Re-read after acquiring the lock — another instance may have applied migrations
+    const [row] = await sql`SELECT COALESCE(MAX(version), 0) AS current FROM schema_version`;
+    const currentVersion = Number(row.current);
 
-  const pending = migrations
-    .filter((m) => m.version > currentVersion)
-    .sort((a, b) => a.version - b.version);
+    const pending = migrations
+      .filter((m) => m.version > currentVersion)
+      .sort((a, b) => a.version - b.version);
 
-  if (pending.length === 0) return;
+    if (pending.length === 0) return;
 
-  for (const migration of pending) {
-    console.log(`[db] Applying migration v${migration.version}: ${migration.description}`);
-    await sql.begin(async (tx) => {
-      await migration.up(tx);
-      await tx`INSERT INTO schema_version (version) VALUES (${migration.version})`;
-    });
+    for (const migration of pending) {
+      console.log(`[db] Applying migration v${migration.version}: ${migration.description}`);
+      await sql.begin(async (tx) => {
+        await migration.up(tx);
+        await tx`INSERT INTO schema_version (version) VALUES (${migration.version})`;
+      });
+    }
+
+    console.log(`[db] Migrations complete (applied ${pending.length})`);
+  } finally {
+    await sql`SELECT pg_advisory_unlock(${LOCK_KEY})`;
   }
-
-  console.log(`[db] Migrations complete (applied ${pending.length})`);
 }

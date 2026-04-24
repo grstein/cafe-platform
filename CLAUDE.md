@@ -221,6 +221,12 @@ pi-config/
 
 See `examples/pi-config/` for templates with all fields documented.
 
+## Prototypes
+
+UI mockups and prototypes live in `/prototypes/` (gitignored). The directory
+may contain real PII for design reference, so it must never be committed.
+Place any new mockup or HTML prototype there — not under `docs/`.
+
 ## Additional docs (load on demand)
 
 Do not read these unless the current task matches them — they are not auto-loaded.
@@ -231,3 +237,37 @@ Do not read these unless the current task matches them — they are not auto-loa
   auth, pipeline integration). Read when implementing or extending admin screens.
 - `TODO.md` — roadmap and backlog. Read when planning new work or picking up
   an open item.
+
+### Configuration & customization reference (`docs/config/`, `docs/reference/`)
+
+Reference docs for every configurable surface. Full index:
+`docs/config/README.md`.
+
+- `docs/config/env-vars.md` — env var reference (`.env`). Read when touching
+  `.env`, `DATABASE_URL`, `RABBITMQ_URI`, `OPENROUTER_API_KEY`, `PIX_*`,
+  `ORDER_PREFIX`, `REFERRAL_CODE_PREFIX`, paths.
+- `docs/config/app-config.md` — `app_config` JSONB schema (LLM, session,
+  behavior, PIX, available models). Read before changing any DB-backed
+  runtime knob.
+- `docs/config/pi-config.md` — layout of `pi-config/` and which file is
+  read when. Read when confused about seed-once vs per-session files.
+- `docs/config/agents-md.md` — authoring `pi-config/AGENTS.md`. Read when
+  customizing persona, business context, or tool guardrails.
+- `docs/config/models.md` — `pi-config/models.json` and `settings.json`.
+  Read when adding an LLM model or tuning thinking/compaction.
+- `docs/config/skills.md` — `pi-config/skills/`, `prompts/`,
+  `extensions/`. Read when adding a Pi SDK skill.
+- `docs/config/products.md` — `products.json` schema and seed-products
+  upsert semantics. Read when editing the catalog.
+- `docs/config/allowlist.md` — allowlist patterns, referral gating,
+  `access_status` transitions. Read when debugging access control.
+- `docs/reference/commands.md` — static `/command` catalog and how to add
+  one. Read before adding a new command or changing alias behavior.
+- `docs/reference/tools.md` — Pi Agent tools catalog (11 tools) and how
+  to add one. Read before adding or modifying a tool.
+- `docs/reference/database.md` — table schemas, lifecycle rules,
+  migration conventions.
+- `docs/reference/rabbitmq.md` — exchange/queue/routing table, DLQ ops,
+  common failure modes.
+- `docs/reference/setup-scripts.md` — `setup/*.mjs` reference with
+  idempotency and re-run notes.

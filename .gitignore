@@ -12,3 +12,6 @@ logs/
 # Tenant-specific data — belongs to a separate private repo, not this one.
 /tenants/
 /pi-config/
+
+# Local prototypes / mockups — may contain real PII for design work. Keep out of public repo.
+/prototypes/
