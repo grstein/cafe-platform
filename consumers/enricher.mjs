@@ -90,12 +90,20 @@ function buildContextBlock(customer, cart, orders, history) {
  * it applies — not stored as stable context.
  */
 function buildTurnBlock(envelope) {
-  if (!envelope.payload.is_batch) return "";
-  const lines = [`[MENSAGENS EM SEQUÊNCIA — ${envelope.payload.batch_count} mensagens]`];
-  for (const m of envelope.payload.messages) {
-    lines.push(`${String(m.ts || "").substring(11, 19)} — "${m.text}"`);
+  const lines = [];
+  const cmd = envelope.metadata?.command_result;
+  if (cmd?.narrate && cmd.narration) {
+    lines.push(`[SISTEMA] ${cmd.narration}`);
+    lines.push("(O comando já foi executado. Reconheça a ação e continue a conversa naturalmente — não ofereça executá-lo de novo.)");
   }
-  lines.push("(Trate como uma única solicitação)");
+  if (envelope.payload.is_batch) {
+    if (lines.length) lines.push("");
+    lines.push(`[MENSAGENS EM SEQUÊNCIA — ${envelope.payload.batch_count} mensagens]`);
+    for (const m of envelope.payload.messages) {
+      lines.push(`${String(m.ts || "").substring(11, 19)} — "${m.text}"`);
+    }
+    lines.push("(Trate como uma única solicitação)");
+  }
   return lines.join("\n");
 }
 

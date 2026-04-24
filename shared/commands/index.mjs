@@ -154,9 +154,18 @@ export function createCommandHandlers(repos, pixConfig, extraConfig = {}) {
   async function handleCancelar(phone) {
     const order = await repos.orders.cancel(phone);
     if (!order) {
-      return { command: "cancelar", text: "Nenhum pedido pendente para cancelar." };
+      return {
+        command: "cancelar",
+        narrate: true,
+        narration: "Cliente enviou /cancelar, mas não havia pedido pendente.",
+      };
     }
-    return { command: "cancelar", text: `Pedido #${fmtOrderId(order.id)} cancelado. Quando quiser, é só me chamar. ☕` };
+    return {
+      command: "cancelar",
+      narrate: true,
+      narration: `Cliente enviou /cancelar. Pedido #${fmtOrderId(order.id)} cancelado com sucesso no banco.`,
+      order_id: order.id,
+    };
   }
 
   async function handlePedido(phone) {

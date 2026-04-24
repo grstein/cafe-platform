@@ -165,6 +165,13 @@ async function main() {
       if (cmdResult) {
         const envelope = createEnvelope({ phone, text, pushName });
         envelope.metadata.command_result = cmdResult;
+        if (cmdResult.narrate) {
+          // Side effect já executado; agente narra o resultado no pipeline normal.
+          setStage(envelope, "validated");
+          publish(channel, "msg.flow", "validated", envelope);
+          ack(channel, msg);
+          return;
+        }
         if (cmdResult.text) setResponse(envelope, cmdResult.text, cmdResult.messages || null);
         setStage(envelope, "outgoing");
         publish(channel, "msg.flow", "outgoing", envelope);
