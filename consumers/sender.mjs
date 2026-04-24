@@ -13,6 +13,7 @@ import { loadConfig, getConfig } from "../shared/lib/config.mjs";
 import { getDB, initDB } from "../shared/db/connection.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
+const PREFETCH = Number(process.env.PREFETCH) || 8;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function randomDelay(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
@@ -78,8 +79,8 @@ async function main() {
   await loadConfig(getDB());
   const { connection, channel } = await connect(RABBITMQ_URI);
 
-  consume(channel, "sender.response", (msg) => handleMessage(channel, msg, getConfig()));
-  consume(channel, "sender.outgoing", (msg) => handleMessage(channel, msg, getConfig()));
+  consume(channel, "sender.response", (msg) => handleMessage(channel, msg, getConfig()), { prefetch: PREFETCH });
+  consume(channel, "sender.outgoing", (msg) => handleMessage(channel, msg, getConfig()), { prefetch: PREFETCH });
 
   console.log("🟢 Sender listening on sender.response + sender.outgoing");
   for (const sig of ["SIGINT", "SIGTERM"]) {

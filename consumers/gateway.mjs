@@ -19,6 +19,7 @@ import { createCommandHandlers } from "../shared/commands/index.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const QUEUE = "gateway.incoming";
+const PREFETCH = Number(process.env.PREFETCH) || 8;
 const REFERRAL_CODE_PREFIX = process.env.REFERRAL_CODE_PREFIX || "REF-";
 const _escapedPrefix = REFERRAL_CODE_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const CODE_PATTERN = new RegExp(`\\b${_escapedPrefix}[A-HJ-NP-Z2-9]{4}\\b`, "i");
@@ -183,7 +184,7 @@ async function main() {
       console.error("[gateway] Error:", err.message);
       nack(channel, msg, !msg.fields.redelivered);
     }
-  });
+  }, { prefetch: PREFETCH });
 
   // Periodic cleanup
   setInterval(() => {

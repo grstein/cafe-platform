@@ -17,6 +17,7 @@ import { createReferralRepo } from "../shared/db/referrals.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const QUEUE = "enricher.ready";
+const PREFETCH = Number(process.env.PREFETCH) || 8;
 
 let repos = null;
 function getRepos() {
@@ -116,14 +117,16 @@ async function main() {
       const config = getConfig();
       const pushName = envelope.payload.messages[0]?.pushName;
       await r.customers.upsert(phone, { push_name: pushName });
-      const customer = await r.customers.getByPhone(phone);
-
       const ttl = config.session?.ttl_minutes || 30;
-      const history = await r.conversations.getRecent(phone, ttl);
-      const cart = await r.cart.getSummary(phone);
-      const orders = await r.orders.getRecent(phone, 3);
 
-      const msgCount = await r.conversations.getCount(phone, ttl);
+      // Parallelize independent reads — all keyed by phone, none depend on each other.
+      const [customer, history, cart, orders, msgCount] = await Promise.all([
+        r.customers.getByPhone(phone),
+        r.conversations.getRecent(phone, ttl),
+        r.cart.getSummary(phone),
+        r.orders.getRecent(phone, 3),
+        r.conversations.getCount(phone, ttl),
+      ]);
       const softLimit = config.session?.soft_limit || 40;
       const hardLimit = config.session?.hard_limit || 60;
 
@@ -148,7 +151,7 @@ async function main() {
       console.error("[enricher] Error:", err.message);
       nack(channel, msg, !msg.fields.redelivered);
     }
-  });
+  }, { prefetch: PREFETCH });
 
   console.log(`🟢 Enricher listening on ${QUEUE}`);
   for (const sig of ["SIGINT", "SIGTERM"]) {

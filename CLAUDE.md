@@ -271,3 +271,6 @@ Reference docs for every configurable surface. Full index:
   common failure modes.
 - `docs/reference/setup-scripts.md` — `setup/*.mjs` reference with
   idempotency and re-run notes.
+- `docs/reference/performance.md` — simulation scripts (`scripts/sim/*`),
+  `PIPELINE_TIMING` events, prefetch tuning, known bottlenecks. Read when
+  benchmarking or tuning throughput.

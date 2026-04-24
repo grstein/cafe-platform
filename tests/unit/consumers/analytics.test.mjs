@@ -4,6 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { createLogger } from "../../../shared/lib/logger.mjs";
+import { extractStageTimings } from "../../../consumers/analytics.mjs";
 
 // Replicate analytics routing logic for testing (single logger, no tenant lookup)
 function processAnalytics(envelope, logger) {
@@ -99,5 +100,47 @@ describe("analytics internals", () => {
       payload: {},
     }, logger);
     assert.equal(logged[0], "COMPLETED");
+  });
+});
+
+describe("analytics extractStageTimings", () => {
+  it("returns null for missing or too-short timings", () => {
+    assert.equal(extractStageTimings(null), null);
+    assert.equal(extractStageTimings({}), null);
+    assert.equal(extractStageTimings({ a: "2026-01-01T00:00:00Z" }), null);
+  });
+
+  it("computes per-stage deltas and end_to_end", () => {
+    const timings = {
+      incoming_to_validated: "2026-01-01T00:00:00.000Z",
+      validated_to_ready:    "2026-01-01T00:00:02.500Z",
+      ready_to_enriched:     "2026-01-01T00:00:02.600Z",
+      enriched_to_response:  "2026-01-01T00:00:07.000Z",
+    };
+    const out = extractStageTimings(timings);
+    assert.equal(out.end_to_end, 7000);
+    assert.equal(out.stages.validated_to_ready, 2500);
+    assert.equal(out.stages.ready_to_enriched, 100);
+    assert.equal(out.stages.enriched_to_response, 4400);
+  });
+
+  it("sorts out-of-order timings before diffing", () => {
+    const timings = {
+      enriched_to_response:  "2026-01-01T00:00:05.000Z",
+      incoming_to_validated: "2026-01-01T00:00:00.000Z",
+      ready_to_enriched:     "2026-01-01T00:00:02.000Z",
+    };
+    const out = extractStageTimings(timings);
+    assert.equal(out.end_to_end, 5000);
+  });
+
+  it("drops non-parseable timings", () => {
+    const timings = {
+      incoming_to_validated: "2026-01-01T00:00:00.000Z",
+      bogus:                 "not a date",
+      enriched_to_response:  "2026-01-01T00:00:04.000Z",
+    };
+    const out = extractStageTimings(timings);
+    assert.equal(out.end_to_end, 4000);
   });
 });

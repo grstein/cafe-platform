@@ -6,7 +6,12 @@
   "scripts": {
     "test": "node --test --test-concurrency=1 --import=./tests/setup.mjs \"tests/unit/**/*.test.mjs\" \"tests/integration/**/*.test.mjs\"",
     "test:unit": "node --test --test-concurrency=1 --import=./tests/setup.mjs \"tests/unit/**/*.test.mjs\"",
-    "test:integration": "node --test --test-concurrency=1 --import=./tests/setup.mjs \"tests/integration/**/*.test.mjs\""
+    "test:integration": "node --test --test-concurrency=1 --import=./tests/setup.mjs \"tests/integration/**/*.test.mjs\"",
+    "sim:load": "node scripts/sim/sim-load.mjs",
+    "sim:rapid": "node scripts/sim/sim-rapid-fire.mjs",
+    "sim:resilience": "node scripts/sim/sim-resilience.mjs",
+    "sim:probe": "node scripts/sim/probe-queues.mjs",
+    "sim:bench": "node scripts/sim/bench-report.mjs"
   },
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.67.68",
