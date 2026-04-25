@@ -96,7 +96,9 @@ export async function createBaileysConnection({ label, authDir, selfPhone = "", 
 
     sock.ev.on("messages.upsert", (upsert) => {
       const { messages, type } = upsert;
-      if (type !== "notify") return;
+      // "notify" = new inbound; "append" = sent from another linked device of
+      // this same account (used for admin self-chat). Anything else is sync/history.
+      if (type !== "notify" && type !== "append") return;
       for (const msg of messages) {
         // Allow fromMe ONLY for self-chat (operator messaging the bot's own number).
         // All other fromMe events are the bot's own outbound replies — dropping them
