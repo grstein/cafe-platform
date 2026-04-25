@@ -21,6 +21,9 @@ export async function createBaileysConnection({ label, authDir, selfPhone = "", 
 
   let reconnectAttempt = 0;
   let sock;
+  // Bot's own LID (e.g. "162826706530544@lid") — populated on connection.open.
+  // Self-chat fromMe events arrive with remoteJid = this LID.
+  let ownLidDigits = "";
 
   function toJid(phone) {
     return phone.includes("@") ? phone : `${phone}@s.whatsapp.net`;
@@ -55,6 +58,10 @@ export async function createBaileysConnection({ label, authDir, selfPhone = "", 
         reconnectAttempt = 0;
         const qrFile = path.join(authDir, "..", "qr.txt");
         if (fs.existsSync(qrFile)) fs.unlinkSync(qrFile);
+        // Capture the bot's own LID — needed to recognize self-chat fromMe events.
+        const lidJid = sock?.user?.lid || "";
+        ownLidDigits = lidJid.replace(/[:@].*$/, "");
+        if (ownLidDigits) console.log(`[baileys][${tenantId}] Own LID digits: ${ownLidDigits}`);
         if (onConnect) onConnect();
       }
 
@@ -106,8 +113,17 @@ export async function createBaileysConnection({ label, authDir, selfPhone = "", 
         // prevents reply loops. selfPhone must match the digits-only JID.
         if (msg.key.fromMe) {
           // Strip device suffix (`:9`) and JID host so we compare digits only.
-          const fromPhone = (msg.key.remoteJid || "").replace(/[:@].*$/, "");
-          if (!selfPhone || fromPhone !== selfPhone) continue;
+          // Self-chat arrives with remoteJid = own LID (`@lid`) on multi-device,
+          // or with the phone JID (`@s.whatsapp.net`) on legacy. Match either.
+          const fromDigits = (msg.key.remoteJid || "").replace(/[:@].*$/, "");
+          const matchesPhone = !!selfPhone && fromDigits === selfPhone;
+          const matchesLid   = !!ownLidDigits && fromDigits === ownLidDigits;
+          if (!matchesPhone && !matchesLid) continue;
+          // Rewrite the JID to the bot's phone number so downstream stages
+          // (gateway, customer lookups) see a consistent identifier.
+          if (matchesLid && selfPhone) {
+            msg.key.remoteJid = `${selfPhone}@s.whatsapp.net`;
+          }
         }
         // Resolve LID (@lid) to phone JID (@s.whatsapp.net)
         const jid = msg.key.remoteJid || "";
