@@ -51,7 +51,8 @@ function parseIncomingPayload(raw) {
   const key = d.key || {};
   const jid = key.remoteJid || "";
   if (jid.includes("@g.us") || jid.includes("@broadcast")) return null;
-  const phone = jid.replace("@s.whatsapp.net", "");
+  // Strip device suffix (`:9`) and JID host — keep digits only.
+  const phone = jid.replace(/[:@].*$/, "");
   if (!phone) return null;
   const msg = d.message || {};
   const text = msg.conversation || msg.extendedTextMessage?.text || "";

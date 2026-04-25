@@ -102,8 +102,8 @@ export async function createBaileysConnection({ label, authDir, selfPhone = "", 
         // All other fromMe events are the bot's own outbound replies — dropping them
         // prevents reply loops. selfPhone must match the digits-only JID.
         if (msg.key.fromMe) {
-          const fromJid = msg.key.remoteJid || "";
-          const fromPhone = fromJid.replace(/@.*$/, "");
+          // Strip device suffix (`:9`) and JID host so we compare digits only.
+          const fromPhone = (msg.key.remoteJid || "").replace(/[:@].*$/, "");
           if (!selfPhone || fromPhone !== selfPhone) continue;
         }
         // Resolve LID (@lid) to phone JID (@s.whatsapp.net)
