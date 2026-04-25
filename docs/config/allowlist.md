@@ -17,6 +17,14 @@ Source of truth: `consumers/gateway.mjs`, `shared/db/allowlist.mjs`,
 4. Otherwise                     → silently drop the message.
 ```
 
+There is also an **out-of-band entry path**: the bot operator can
+authorize a phone via `/admin autorizar <telefone>` from WhatsApp
+self-chat. That sets `access_status = 'active'` and stamps
+`referred_by_phone = 'admin'` (only when no prior referrer is recorded,
+preserving real referral chains). The invitee receives an automatic
+welcome message and is instructed to use `/ajuda`. See
+[../reference/commands.md#admin--admin-subcommand-args](../reference/commands.md#admin--admin-subcommand-args).
+
 Step 4 logs `Denied <phone> (not in allowlist, no valid code)` but sends
 nothing — the goal is to avoid inviting spam replies.
 
@@ -108,6 +116,10 @@ needing to send the code.
 | `active` | Full access. | gateway on first contact from allowlisted phone; gateway after first `/confirma` for invited customer. |
 | `invited` | Pre-authorized via referral code or `invite_customer` tool. | gateway (code path) or `invite_customer` tool. |
 | `blocked` | Denied regardless of allowlist. | Manual admin action (no code path sets this yet). |
+
+`referred_by_phone = 'admin'` is the marker for customers authorized
+via `/admin autorizar`. The `referrals` table is **not** touched by
+this path (admin is not a real referrer phone) — only the customer row.
 
 Default on `customers` insert: `active`.
 

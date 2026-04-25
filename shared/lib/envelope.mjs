@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 
-export function createEnvelope({ phone, channel = "whatsapp", text, pushName }) {
+export function createEnvelope({ phone, channel = "whatsapp", text, pushName, actor = "customer" }) {
   const now = new Date().toISOString();
   return {
     id: randomUUID(),
@@ -17,7 +17,7 @@ export function createEnvelope({ phone, channel = "whatsapp", text, pushName }) 
       response_messages: null,
     },
     context: {},
-    metadata: { stage: "incoming", attempt: 1, source: "whatsapp", timings: {}, command_result: null },
+    metadata: { stage: "incoming", attempt: 1, source: "whatsapp", timings: {}, command_result: null, actor },
   };
 }
 

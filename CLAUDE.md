@@ -155,12 +155,16 @@ A production deployment:
   `update_cart`, `remove_from_cart`, `view_cart`, `checkout`, `create_order`,
   `list_orders`, `save_customer_info`, `invite_customer`, `get_referral_info`
 - `commands/` — static command handlers (all async): `/ajuda`, `/carrinho`
-  (alias `/pedido`), `/confirma`, `/cancelar`, `/reiniciar`, `/indicar`, `/modelo`
+  (alias `/pedido`), `/confirma`, `/cancelar`, `/reiniciar`, `/indicar`, `/modelo`,
+  `/admin` (operator-only, see `docs/reference/commands.md`)
 
-**Envelope** (`shared/lib/envelope.mjs`): `createEnvelope({ phone, text, pushName })`
+**Envelope** (`shared/lib/envelope.mjs`): `createEnvelope({ phone, text, pushName, actor })`
 returns the message object flowing through the pipeline. Contains `phone`, `payload`
 (messages, merged_text, response), `context` (enriched data), `metadata`
-(stage, timings, command_result). No `tenant_id` field.
+(stage, timings, command_result, `actor` — `"admin" | "customer"`, default
+`"customer"`). The gateway sets `actor="admin"` only for WhatsApp self-chat
+from `BOT_PHONE`; future enricher/agent branching will key off this field.
+No `tenant_id` field.
 
 ## Development Workflow
 

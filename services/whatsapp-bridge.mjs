@@ -26,9 +26,12 @@ async function main() {
 
   console.log(`   Instance: ${instanceName}`);
 
+  const selfPhone = (process.env.BOT_PHONE || config.bot_phone || "").replace(/\D/g, "");
+
   connection = await createBaileysConnection({
     label: instanceName,
     authDir,
+    selfPhone,
     onMessage(msg) {
       const payload = baileysMessageToPayload(msg, instanceName);
       publish(channel, "msg.flow", "incoming", payload);

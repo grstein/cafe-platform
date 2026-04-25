@@ -5,7 +5,8 @@ agent. Handlers live in `shared/commands/`.
 **Out of scope**: Pi Agent tools ([tools.md](./tools.md)), referral flow
 ([../config/allowlist.md](../config/allowlist.md)).
 
-Source of truth: `shared/commands/index.mjs`, `shared/commands/carrinho.mjs`.
+Source of truth: `shared/commands/index.mjs`, `shared/commands/carrinho.mjs`,
+`shared/commands/admin.mjs`.
 
 Commands are matched case-insensitively after trimming. They short-circuit
 the agent: the gateway publishes directly to `msg.flow outgoing`.
@@ -104,6 +105,68 @@ Cancel the pending order.
 - `orders.cancel(phone)` — sets status `cancelled`, `cancelled_at = NOW()`.
 - No pending → "Nenhum pedido pendente para cancelar."
 - Cancelled → "Pedido #<prefix><id> cancelado. Quando quiser, é só me chamar."
+
+### `/admin` · `/admin <subcommand> [args]`
+
+Privileged commands for the bot operator. **Only handled when the message
+arrives via WhatsApp self-chat from the bot's own number** — see
+[Admin self-chat security](#admin-self-chat-security) below. Non-admin
+`/admin` traffic is silently dropped.
+
+Subcommands:
+
+| Subcommand | Effect |
+|------------|--------|
+| `/admin` | Print the admin help menu (registry-driven). |
+| `/admin autorizar <telefone>` | Mark the phone as `access_status='active'`, stamp `referred_by_phone='admin'` if no prior referrer, and send a welcome message to the invited phone instructing `/ajuda`. Idempotent. |
+
+Phone normalization: digits only; if the country code `55` is missing it
+is prepended. Final length must be 12 or 13 digits (Brazil: `55 + DDD +
+8/9-digit number`). Invalid input returns an error to the operator
+without contacting the target.
+
+The welcome message is published directly to `msg.flow` with routing key
+`send` (consumed by `whatsapp.send` in the bridge). It bypasses the
+sender's humanization delay because it's system-initiated, and the
+target phone is different from the envelope's `phone` (which is the
+operator's number).
+
+Audit: every admin command is logged via `console.log("[admin][audit] …")`
+with the operator phone, subcommand, args, and outcome.
+
+#### Admin self-chat security
+
+The admin identity rule is: `key.fromMe === true` AND the JID strips to
+`BOT_PHONE`. This is the WhatsApp self-chat ("Recado para mim") pattern.
+Three independent gates enforce it:
+
+1. **Bridge** (`shared/lib/baileys-client.mjs`): `selfPhone` option drops
+   every `fromMe` event whose `remoteJid` is not the bot's own number.
+   Without this, the bot's own outbound replies (also `fromMe`) would
+   loop back into the pipeline.
+2. **Gateway** (`consumers/gateway.mjs`): re-derives `isAdmin = fromMe &&
+   phone === BOT_PHONE`, sets `metadata.actor = "admin" | "customer"`,
+   and bypasses rate-limit + allowlist for admin. Stray non-admin
+   `fromMe` is dropped here as defense in depth. Non-admin `/admin` text
+   is silently ignored — never returned as "unknown command" so the
+   surface isn't discoverable.
+3. **Command handler** (`shared/commands/admin.mjs`): `tryHandleAdmin`
+   re-asserts `ctx.actor === "admin"` before any privileged write.
+
+If any single gate is bypassed by a future refactor, the others still
+hold. WhatsApp's own message keys are server-signed, so `fromMe` cannot
+be spoofed by a third party in production. The dev test injection
+script (`setup/send-test-message.mjs`) hardcodes `fromMe: false`.
+
+#### Adding a new admin subcommand
+
+1. Append an entry to `SUBCOMMANDS` in `shared/commands/admin.mjs`.
+2. Add a `case` to the `switch` in `tryHandleAdmin` and write the
+   handler. Re-verify `ctx.actor === "admin"` is implicit (the dispatcher
+   checks once); if your handler can be called from elsewhere, re-check.
+3. If the command needs to send to a phone other than the operator's,
+   publish to `msg.flow` with routing key `send` and an explicit
+   `{ phone, action: "text", text }` payload.
 
 ### `/reiniciar`
 

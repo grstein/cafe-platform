@@ -16,6 +16,7 @@ import { createCartRepo } from "../shared/db/cart.mjs";
 import { createReferralRepo } from "../shared/db/referrals.mjs";
 import { createAllowlistRepo } from "../shared/db/allowlist.mjs";
 import { createCommandHandlers } from "../shared/commands/index.mjs";
+import { tryHandleAdmin } from "../shared/commands/admin.mjs";
 
 const RABBITMQ_URI = process.env.RABBITMQ_URI;
 const QUEUE = "gateway.incoming";
@@ -48,7 +49,6 @@ function getRepos() {
 function parseIncomingPayload(raw) {
   const d = raw.data || raw;
   const key = d.key || {};
-  if (key.fromMe) return null;
   const jid = key.remoteJid || "";
   if (jid.includes("@g.us") || jid.includes("@broadcast")) return null;
   const phone = jid.replace("@s.whatsapp.net", "");
@@ -56,7 +56,7 @@ function parseIncomingPayload(raw) {
   const msg = d.message || {};
   const text = msg.conversation || msg.extendedTextMessage?.text || "";
   if (!text.trim()) return null;
-  return { phone, text: text.trim(), pushName: d.pushName || "" };
+  return { phone, text: text.trim(), pushName: d.pushName || "", fromMe: !!key.fromMe };
 }
 
 function checkRateLimit(phone, limit = 8) {
@@ -112,8 +112,44 @@ async function main() {
       const parsed = parseIncomingPayload(raw);
       if (!parsed) { ack(channel, msg); return; }
 
-      const { phone, text, pushName } = parsed;
+      const { phone, text, pushName, fromMe } = parsed;
       const config = getConfig();
+      const botPhone = (process.env.BOT_PHONE || config.bot_phone || "").replace(/\D/g, "");
+      const isAdmin = fromMe === true && !!botPhone && phone === botPhone;
+      const actor = isAdmin ? "admin" : "customer";
+
+      // Non-admin fromMe should already be filtered at the bridge; if one slips
+      // through, drop it here as defense in depth (would otherwise loop).
+      if (fromMe && !isAdmin) { ack(channel, msg); return; }
+
+      // Non-admin /admin attempts: never leak the surface — silently ignore.
+      if (!isAdmin && /^\/admin(\s|$)/i.test(text)) { ack(channel, msg); return; }
+
+      // Admin path: bypass rate limits, allowlist, referral gate. Dispatch
+      // /admin commands inline; non-command admin text falls through to the
+      // normal flow so a future admin agent can handle it (actor stays "admin").
+      if (isAdmin) {
+        const adminResult = await tryHandleAdmin(text, {
+          actor, phone, repos: r, channel, config,
+        });
+        if (adminResult) {
+          const envelope = createEnvelope({ phone, text, pushName, actor });
+          envelope.metadata.command_result = adminResult;
+          if (adminResult.text) setResponse(envelope, adminResult.text);
+          setStage(envelope, "outgoing");
+          publish(channel, "msg.flow", "outgoing", envelope);
+          ack(channel, msg);
+          return;
+        }
+        // Non-command admin text — let it flow normally (future admin agent
+        // will branch on metadata.actor === "admin").
+        const envelope = createEnvelope({ phone, text, pushName, actor });
+        setStage(envelope, "validated");
+        publish(channel, "msg.flow", "validated", envelope);
+        ack(channel, msg);
+        return;
+      }
+
       const rateLimit = config.behavior?.rate_limit_per_min || 8;
       const rateStatus = checkRateLimit(phone, rateLimit);
       if (rateStatus === "abuse" || rateStatus === "limited") { ack(channel, msg); return; }

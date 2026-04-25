@@ -176,6 +176,35 @@ export function createCustomerRepo(sql) {
       `;
     },
 
+    /**
+     * Authorize a phone via admin command. Idempotent: marks access_status='active'
+     * and stamps referred_by_phone='admin' only if no referrer was already recorded
+     * (preserving an existing referral chain). Returns { wasNew, alreadyActive }.
+     */
+    async adminAuthorize(phone) {
+      const before = await this.getByPhone(phone);
+      const wasNew = !before;
+      const alreadyActive = before?.access_status === "active";
+
+      if (!before) {
+        await sql`
+          INSERT INTO customers (phone, access_status, referred_by_phone)
+          VALUES (${phone}, 'active', 'admin')
+        `;
+        // Generate referral code for the new customer
+        await this.upsert(phone, {});
+      } else {
+        await sql`
+          UPDATE customers SET
+            access_status     = 'active',
+            referred_by_phone = COALESCE(referred_by_phone, 'admin'),
+            updated_at        = NOW()
+          WHERE phone = ${phone}
+        `;
+      }
+      return { wasNew, alreadyActive };
+    },
+
     async ensureReferralCode(phone) {
       const customer = await this.getByPhone(phone);
       if (customer?.referral_code) return customer.referral_code;

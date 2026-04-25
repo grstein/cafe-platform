@@ -13,7 +13,7 @@ function lidToPhone(sock, lid) {
   return null;
 }
 
-export async function createBaileysConnection({ label, authDir, onMessage, onQR, onConnect, onDisconnect }) {
+export async function createBaileysConnection({ label, authDir, selfPhone = "", onMessage, onQR, onConnect, onDisconnect }) {
   const tenantId = label || "bridge"; // kept as local label for log messages only
   fs.mkdirSync(authDir, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -98,7 +98,14 @@ export async function createBaileysConnection({ label, authDir, onMessage, onQR,
       const { messages, type } = upsert;
       if (type !== "notify") return;
       for (const msg of messages) {
-        if (msg.key.fromMe) continue;
+        // Allow fromMe ONLY for self-chat (operator messaging the bot's own number).
+        // All other fromMe events are the bot's own outbound replies — dropping them
+        // prevents reply loops. selfPhone must match the digits-only JID.
+        if (msg.key.fromMe) {
+          const fromJid = msg.key.remoteJid || "";
+          const fromPhone = fromJid.replace(/@.*$/, "");
+          if (!selfPhone || fromPhone !== selfPhone) continue;
+        }
         // Resolve LID (@lid) to phone JID (@s.whatsapp.net)
         const jid = msg.key.remoteJid || "";
         if (jid.endsWith("@lid")) {
