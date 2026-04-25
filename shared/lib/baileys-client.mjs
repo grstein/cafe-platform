@@ -103,7 +103,6 @@ export async function createBaileysConnection({ label, authDir, selfPhone = "", 
 
     sock.ev.on("messages.upsert", (upsert) => {
       const { messages, type } = upsert;
-      console.log(`[baileys][${tenantId}] upsert type=${type} count=${messages.length} keys=${JSON.stringify(messages.map(m => ({ jid: m.key.remoteJid, fromMe: m.key.fromMe, id: m.key.id })))}`);
       // "notify" = new inbound; "append" = sent from another linked device of
       // this same account (used for admin self-chat). Anything else is sync/history.
       if (type !== "notify" && type !== "append") return;
